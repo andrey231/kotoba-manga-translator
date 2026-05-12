@@ -15,6 +15,7 @@ manga_translator.py
 import os
 import re
 import json
+import time
 import base64
 import warnings
 
@@ -39,6 +40,8 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
 BUBBLE_MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
 BUBBLE_CLASSES = {0: "bubble", 1: "text_bubble", 2: "text_free"}
+
+DEFAULT_FONT = "arial.ttf"   # переопределяется через process_directory(font_path=...)
 
 os.makedirs(CROPS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -100,6 +103,32 @@ class CharacterArchive:
             )
         return "\n".join(lines)
 
+    def _unique_name(self, proposed: str, cid: str) -> str:
+        """
+        Возвращает имя, уникальное среди уже существующих в архиве.
+        Если такое имя занято — добавляет дисамбигуатор из ID персонажа.
+        """
+        existing_names = {c["name"].lower() for c in self.characters.values()}
+        if proposed.lower() not in existing_names:
+            return proposed
+
+        # Имя занято — пробуем извлечь отличительную часть из ID
+        # Пример: dark_haired_woman_top_right → "top right"
+        base_words = set(re.findall(r"[a-z]+", proposed.lower()))
+        id_words = re.findall(r"[a-z]+", cid.lower())
+        extras = [w for w in id_words if w not in base_words and len(w) > 2]
+        if extras:
+            candidate = f"{proposed} ({' '.join(extras)})"
+            if candidate.lower() not in existing_names:
+                return candidate
+
+        # Последний резерв — числовой суффикс
+        for i in range(2, 100):
+            candidate = f"{proposed} #{i}"
+            if candidate.lower() not in existing_names:
+                return candidate
+        return proposed  # сдаёмся
+
     def update_from_json(self, data: list, page_idx: int):
         """Принимает список персонажей от LLM и обновляет архив."""
         for char in data:
@@ -114,14 +143,20 @@ class CharacterArchive:
                         self.characters[cid].get("notes", "") + "; " + new_notes
                     ).strip("; ")
             else:
+                # Гарантируем что имя не дублирует уже существующего персонажа
+                raw_name = char.get("name", cid)
+                unique_name = self._unique_name(raw_name, cid)
+                if unique_name != raw_name:
+                    print(f"  [архив] Имя '{raw_name}' уже занято → '{unique_name}'")
+
                 self.characters[cid] = {
-                    "name": char.get("name", cid),
+                    "name": unique_name,
                     "gender": char.get("gender", "unknown"),
                     "appearance": char.get("appearance", ""),
                     "notes": char.get("notes", ""),
                     "first_seen": page_idx,
                 }
-                print(f"  [архив] Новый персонаж: {char.get('name', cid)}")
+                print(f"  [архив] Новый персонаж: {unique_name}")
         self.save()
 
     def find_character(self, description: str) -> dict | None:
@@ -199,29 +234,139 @@ def natural_key(filename: str) -> list:
     ]
 
 
-# ─── анализ персонажей ────────────────────────────────────────────────────────
+# ─── распознавание страниц-представлений персонажей ──────────────────────────
 
-def analyze_characters(image_path: str, archive: CharacterArchive,
-                        page_idx: int) -> str:
-    """Возвращает текстовый блок о персонажах на странице и обновляет архив."""
-    print("  Анализ персонажей...")
+def detect_character_intro_page(image_path: str) -> bool:
+    """
+    Определяет, является ли страница «представлением персонажей» —
+    галерея портретов с подписями (имя + краткое описание под каждым).
+    Такие страницы обычно идут в начале главы/тома.
+    """
+    prompt = """Look at this manga page.
 
-    prompt = f"""You are a manga character analyst tracking characters across pages.
+Is this a CHARACTER INTRODUCTION page — a gallery of character portraits where
+each character is shown alongside their name and a brief description (like a
+cast page, character roster, or "dramatis personae")?
+
+This is NOT an introduction page if it shows characters in a normal scene,
+talking, or doing actions. It IS an introduction page only if the layout is
+clearly a roster/gallery with labels.
+
+Answer with EXACTLY one word: YES or NO."""
+
+    raw = ollama("gemma4:26b", prompt, image_path, timeout=120).strip().upper()
+    is_intro = raw.startswith("YES")
+    print(f"  [intro detect] {raw[:30]} → {'это галерея' if is_intro else 'обычная страница'}")
+    return is_intro
+
+
+def extract_character_intros(image_path: str,
+                              archive: CharacterArchive,
+                              page_idx: int) -> str:
+    """
+    Извлекает с галереи представлений пары «персонаж → имя + описание»
+    и записывает их в архив с in-image именами.
+    Возвращает characters_context для последующих этапов пайплайна.
+    """
+    print("  Извлечение представлений персонажей...")
+
+    prompt = f"""This is a CHARACTER INTRODUCTION page — a roster of characters
+with their names and descriptions.
 
 {archive.to_prompt()}
 
-Look at this manga page. For EACH visible character:
+For EACH character portrait on this page, extract:
+1. Their REAL name as written on the page (next to portrait, in caption, in nameplate)
+2. Their appearance (hair, clothing, build)
+3. Any role/description text written next to them
 
-STEP 1 — MATCH: Compare to every character in the archive.
-- Match by: hair color, style, face, clothing, body type
-- If matched → use existing ID and name
-- Only create NEW if no match found
+IMPORTANT:
+- The name MUST come from text printed on this page, not invented
+- If a character matches one in the archive above, use the EXISTING id
+- All names must be unique
+- Read the text carefully — names are often written in romaji, katakana, or both
 
-STEP 2 — Return JSON array:
+Return ONLY a JSON array:
 [
   {{
-    "id": "existing_id_or_new_snake_case",
-    "name": "character name or description",
+    "id": "existing_or_snake_case_of_name",
+    "name": "EXACT name as printed on the page",
+    "gender": "male/female/unknown",
+    "appearance": "hair color+style, face, clothing, build",
+    "role": "their role/description as written on page (e.g. 'Princess', 'Knight')",
+    "notes": "any other info from the page",
+    "is_new": true/false
+  }}
+]"""
+
+    raw = ollama("gemma4:26b", prompt, image_path)
+    chars = parse_json_array(raw)
+
+    if not chars:
+        print(f"  [warn] представления не распарсились: {raw[:200]}")
+        return "CHARACTERS ON THIS PAGE: unknown"
+
+    # Переносим role в notes — у обычных персонажей этого поля нет,
+    # но информация ценная для последующих переводов
+    for c in chars:
+        role = c.pop("role", "")
+        if role:
+            existing_notes = c.get("notes", "")
+            c["notes"] = f"role: {role}" + (f"; {existing_notes}" if existing_notes else "")
+
+    chars = deduplicate_characters(chars, archive)
+    archive.update_from_json(chars, page_idx)
+
+    lines = ["CHARACTERS INTRODUCED ON THIS PAGE:"]
+    for c in chars:
+        marker = "[NEW]" if c.get("is_new") else "[known]"
+        lines.append(
+            f"- {marker} {c.get('name', '?')} | {c.get('gender', '?')} | "
+            f"{c.get('notes', '')}"
+        )
+    return "\n".join(lines)
+
+
+# ─── совмещённый анализ персонажей + сцены ────────────────────────────────────
+
+def analyze_page_full(image_path: str, archive: CharacterArchive,
+                      manga_ctx: MangaContext,
+                      page_idx: int) -> tuple[str, str, str]:
+    """
+    Один вызов LLM возвращает и персонажей, и описание сцены, и summary.
+    Экономит ~30-50% времени по сравнению с двумя отдельными vision-вызовами.
+
+    Возвращает: (characters_context, page_context, page_summary).
+    """
+    print("  Анализ страницы (персонажи + сцена)...")
+
+    prompt = f"""You are a manga analyst tracking characters across pages AND describing scenes.
+
+{archive.to_prompt()}
+
+{manga_ctx.to_prompt()}
+
+Analyze this manga page. Produce TWO blocks in this exact format:
+
+=== CHARACTERS ===
+A JSON array of all visible characters. For each one:
+
+STEP 1 — MATCH: Compare to the archive above.
+- Match by: hair color, style, face, clothing, body type
+- If matched → use the EXISTING id and name from the archive
+- Only create NEW if no match found
+
+STEP 2 — NAMING:
+- Prefer real names visible in the page (nameplates, captions, dialogue addressing them
+  — e.g. text "Hakusen", "Sumire", "Princess" near a character IS their name)
+- Otherwise invent a SPECIFIC distinctive description (NOT generic like "dark haired woman")
+- All names MUST be unique across this response AND the archive
+
+JSON schema:
+[
+  {{
+    "id": "existing_or_new_snake_case",
+    "name": "UNIQUE name",
     "gender": "male/female/unknown",
     "appearance": "hair color+style, face, clothing, build",
     "position": "top-left / center / bottom-right / etc",
@@ -231,30 +376,64 @@ STEP 2 — Return JSON array:
   }}
 ]
 
-RULES:
-- Known character → use EXACT existing id and gender
-- is_new = false if matched, true if genuinely new
-- No duplicates"""
+=== SCENE ===
+CONTEXT: <2-3 sentences about what is happening on this page>
+SUMMARY: <one short sentence for future reference>
+
+=== END ==="""
 
     raw = ollama("gemma4:26b", prompt, image_path)
-    chars = parse_json_array(raw)
+
+    # --- разбираем блок CHARACTERS ---
+    chars_match = re.search(
+        r"===\s*CHARACTERS\s*===(.*?)===\s*SCENE\s*===",
+        raw, re.DOTALL | re.IGNORECASE,
+    )
+    chars_section = chars_match.group(1) if chars_match else raw
+    chars = parse_json_array(chars_section)
 
     if not chars:
-        print(f"  [warn] персонажи не распарсились: {raw[:200]}")
-        return "CHARACTERS ON THIS PAGE: unknown"
+        print(f"  [warn] персонажи не распарсились: {chars_section[:200]}")
+        characters_context = "CHARACTERS ON THIS PAGE: unknown"
+    else:
+        chars = deduplicate_characters(chars, archive)
+        archive.update_from_json(chars, page_idx)
+        lines = ["CHARACTERS ON THIS PAGE:"]
+        for c in chars:
+            marker = "[NEW]" if c.get("is_new") else "[known]"
+            lines.append(
+                f"- {marker} {c.get('name', c.get('id', '?'))} | "
+                f"{c.get('gender', '?')} | pos={c.get('position', '?')} | "
+                f"emotion={c.get('emotion', '?')}"
+            )
+        characters_context = "\n".join(lines)
 
-    chars = deduplicate_characters(chars, archive)
-    archive.update_from_json(chars, page_idx)
+    # --- разбираем блок SCENE ---
+    scene_match = re.search(
+        r"===\s*SCENE\s*===(.*?)(?:===\s*END\s*===|\Z)",
+        raw, re.DOTALL | re.IGNORECASE,
+    )
+    scene_section = scene_match.group(1) if scene_match else raw
 
-    lines = ["CHARACTERS ON THIS PAGE:"]
-    for c in chars:
-        marker = "[NEW]" if c.get("is_new") else "[known]"
-        lines.append(
-            f"- {marker} {c.get('name', c.get('id', '?'))} | "
-            f"{c.get('gender', '?')} | pos={c.get('position', '?')} | "
-            f"emotion={c.get('emotion', '?')}"
-        )
-    return "\n".join(lines)
+    context_match = re.search(
+        r"CONTEXT:\s*(.+?)\s*(?:SUMMARY:|===|\Z)",
+        scene_section, re.DOTALL | re.IGNORECASE,
+    )
+    summary_match = re.search(
+        r"SUMMARY:\s*(.+?)\s*(?:===|\Z)",
+        scene_section, re.DOTALL | re.IGNORECASE,
+    )
+
+    page_context = (context_match.group(1).strip() if context_match
+                    else scene_section[:300].strip())
+    page_summary = (summary_match.group(1).strip() if summary_match
+                    else page_context[:120])
+
+    # Подстрахуемся от слишком длинных артефактов
+    page_context = page_context[:800]
+    page_summary = page_summary.split("\n")[0][:200]
+
+    return characters_context, page_context, page_summary
 
 
 def deduplicate_characters(chars: list, archive: CharacterArchive) -> list:
@@ -289,19 +468,44 @@ def deduplicate_characters(chars: list, archive: CharacterArchive) -> list:
 
 def find_similar_in_archive(appearance: str,
                              archive: CharacterArchive) -> tuple | None:
-    """Возвращает (id, character), если нашлось ≥2 совпавших ключевых слова."""
+    """
+    Ищет совпадение по внешности с архивом.
+    Возвращает (id, character) только если:
+      - найдено достаточно общих ключевых слов (порог зависит от длины описания)
+      - НЕТ конфликтующих различающих признаков (цвет волос, пол)
+    Это предотвращает ложные совпадения между разными персонажами
+    в одинаковой одежде/стиле.
+    """
     keywords = extract_appearance_keywords(appearance)
     if not keywords:
         return None
 
+    new_distinct = extract_distinctive_features(appearance)
+
     best_match, best_score = None, 0
     for cid, c in archive.characters.items():
-        common = keywords & extract_appearance_keywords(
-            c.get("appearance", "").lower()
-        )
-        if len(common) >= 2 and len(common) > best_score:
+        archived_appearance = c.get("appearance", "").lower()
+        archived_keywords = extract_appearance_keywords(archived_appearance)
+        common = keywords & archived_keywords
+
+        # Порог зависит от размера: для коротких описаний нужно больше доля совпадений
+        min_size = min(len(keywords), len(archived_keywords))
+        threshold = max(3, min_size // 2)   # было: 2, теперь жёстче
+
+        if len(common) < threshold:
+            continue
+
+        # Проверяем различающие признаки — если они конфликтуют, это разные люди
+        archived_distinct = extract_distinctive_features(archived_appearance)
+        if features_conflict(new_distinct, archived_distinct):
+            print(f"  [дедупл-skip] '{c['name']}' отклонён: "
+                  f"волосы {new_distinct['hair_colors']} vs {archived_distinct['hair_colors']}")
+            continue
+
+        if len(common) > best_score:
             best_score = len(common)
             best_match = (cid, c)
+
     return best_match
 
 
@@ -311,6 +515,8 @@ def extract_appearance_keywords(text: str) -> set:
         "a", "an", "the", "with", "and", "or", "is", "are", "has", "have",
         "wearing", "looking", "man", "woman", "person", "character", "young",
         "old", "tall", "short", "small", "large", "none", "partially", "covered",
+        "hair", "eyes", "face", "expression", "style", "kimono", "shirt",
+        "pants", "dress", "clothes", "clothing", "patterned",
     }
     return {
         w for w in re.findall(r"\b[a-z]+\b", text)
@@ -318,50 +524,38 @@ def extract_appearance_keywords(text: str) -> set:
     }
 
 
-# ─── анализ сцены ─────────────────────────────────────────────────────────────
+# Различающие признаки — слова, которые при несовпадении сильно намекают
+# что это разные персонажи
+HAIR_COLORS = {
+    "dark", "black", "brown", "blonde", "blond", "yellow", "light",
+    "white", "silver", "gray", "grey", "red", "ginger", "auburn",
+    "pink", "blue", "green", "purple", "orange",
+}
+HAIR_STYLES = {
+    "long", "short", "bob", "ponytail", "twintails", "braid", "braids",
+    "curly", "straight", "wavy", "spiky", "bangs", "fringe",
+}
 
-def analyze_page(image_path: str, manga_ctx: MangaContext,
-                 characters_context: str) -> tuple[str, str]:
+
+def extract_distinctive_features(text: str) -> dict:
+    """Извлекает признаки, по которым стоит различать персонажей."""
+    words = set(re.findall(r"\b[a-z]+\b", text.lower()))
+    return {
+        "hair_colors": words & HAIR_COLORS,
+        "hair_styles": words & HAIR_STYLES,
+    }
+
+
+def features_conflict(a: dict, b: dict) -> bool:
     """
-    Возвращает (page_context, page_summary) — оба извлекаются из размеченного
-    ответа модели. В page_context не попадает преамбула с архивом, чтобы
-    не дублировать её в последующих промптах.
+    True если у двух описаний есть конфликтующие признаки:
+    оба упоминают цвет волос, и эти цвета не пересекаются.
     """
-    print("  Анализ сцены...")
-    prompt = f"""You are a manga analyst.
-
-{manga_ctx.to_prompt()}
-
-{characters_context}
-
-Describe this manga page using EXACTLY this format:
-
-CONTEXT:
-<2-3 sentences about what is happening in this scene>
-
-SUMMARY:
-<one short sentence for future reference>
-
-END"""
-
-    raw = ollama("gemma4:26b", prompt, image_path)
-
-    # Жёстко извлекаем содержимое между маркерами
-    context_match = re.search(
-        r"CONTEXT:\s*(.+?)\s*(?:SUMMARY:|END|\Z)", raw, re.DOTALL | re.IGNORECASE
-    )
-    summary_match = re.search(
-        r"SUMMARY:\s*(.+?)\s*(?:END|\Z)", raw, re.DOTALL | re.IGNORECASE
-    )
-
-    page_context = context_match.group(1).strip() if context_match else raw[:300].strip()
-    page_summary = summary_match.group(1).strip() if summary_match else page_context[:120]
-
-    # Подстрахуемся от слишком длинных артефактов
-    page_context = page_context[:800]
-    page_summary = page_summary.split("\n")[0][:200]
-
-    return page_context, page_summary
+    # Цвет волос: если оба указаны и не пересекаются — конфликт
+    if a["hair_colors"] and b["hair_colors"]:
+        if not (a["hair_colors"] & b["hair_colors"]):
+            return True
+    return False
 
 
 # ─── атрибуция реплик ─────────────────────────────────────────────────────────
@@ -502,8 +696,31 @@ def preprocess_crop(img_cv: np.ndarray, x: int, y: int,
     return cv2.copyMakeBorder(gray, 64, 64, 64, 64, cv2.BORDER_CONSTANT, value=255)
 
 
+def preprocess_crop_minimal(img_cv: np.ndarray, x: int, y: int,
+                            w: int, h: int) -> np.ndarray:
+    """
+    Мягкий препроцессинг для второго прохода: только лёгкое увеличение
+    и небольшой паддинг, без CLAHE и без grayscale.
+    Помогает на коротких репликах и SFX, которые agressive-препроцессинг
+    может «съесть».
+    """
+    crop = img_cv[y:y+h, x:x+w]
+    h2, w2 = crop.shape[:2]
+    # Скромное увеличение ×2 вместо ×3
+    crop = cv2.resize(crop, (w2 * 2, h2 * 2), interpolation=cv2.INTER_CUBIC)
+    # Цветной с небольшим белым паддингом
+    return cv2.copyMakeBorder(crop, 32, 32, 32, 32, cv2.BORDER_CONSTANT,
+                               value=(255, 255, 255))
+
+
 def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
                idx: int, page_idx: int) -> str:
+    """
+    OCR с двухпроходной стратегией:
+      1) агрессивный препроцессинг + строгий промпт ("read the text")
+      2) если пусто → мягкий препроцессинг + общий промпт ("any characters")
+    """
+    # ── Проход 1: основной ──
     processed = preprocess_crop(img_cv, x, y, w, h)
     crop_path = os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{idx:02d}.png")
     cv2.imwrite(crop_path, processed)
@@ -513,8 +730,39 @@ def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
         crop_path,
         timeout=60,
     )
-    print(f"     [OCR raw] {repr(raw)}")
-    return clean_text(raw)
+    cleaned = clean_text(raw)
+
+    if cleaned and len(cleaned) >= 3:
+        print(f"     [OCR ✓] bubble {idx}: {cleaned[:50]!r}")
+        return cleaned
+
+    # ── Проход 2: ретрай с мягким препроцессингом ──
+    print(f"     [OCR retry] bubble {idx} — пробуем мягкий препроцессинг")
+    processed2 = preprocess_crop_minimal(img_cv, x, y, w, h)
+    crop_path2 = os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{idx:02d}_retry.png")
+    cv2.imwrite(crop_path2, processed2)
+    raw2 = ollama(
+        "glm-ocr:latest",
+        ("Read any text, letters, or characters visible in this image, "
+         "including short sounds, exclamations, sound effects, or single words. "
+         "Return ONLY what is written, no explanation."),
+        crop_path2,
+        timeout=60,
+    )
+    cleaned2 = clean_text(raw2)
+
+    # Берём лучший из двух результатов
+    final = cleaned2 if len(cleaned2) > len(cleaned) else cleaned
+
+    if not final:
+        print(f"     [OCR ✗ EMPTY] bubble {idx} (оба прохода пусты) → {crop_path}, {crop_path2}")
+    elif len(final) < 3:
+        print(f"     [OCR ? SHORT] bubble {idx}: {final!r} (после retry)")
+    else:
+        source = "retry" if final == cleaned2 and cleaned2 != cleaned else "primary"
+        print(f"     [OCR ✓ {source}] bubble {idx}: {final[:50]!r}")
+
+    return final
 
 
 # ─── детекция баблов ─────────────────────────────────────────────────────────
@@ -546,16 +794,20 @@ def detect_bubbles(image_pil: Image.Image, threshold: float = 0.5) -> list[dict]
 # ─── отрисовка ────────────────────────────────────────────────────────────────
 
 def fit_text_in_box(draw: ImageDraw.Draw, text: str, box_w: int,
-                    box_h: int, font_path: str = "arial.ttf") -> tuple:
+                    box_h: int, font_path: str | None = None) -> tuple:
     """
     Подбирает максимальный размер шрифта бинарным поиском (O(log n) вместо O(n)).
     Возвращает (font, lines, line_heights, spacing).
     """
+    if font_path is None:
+        font_path = DEFAULT_FONT
     padding = 4
     usable_w = box_w - padding * 2
     usable_h = box_h - padding * 2
 
     def try_load_font(size: int):
+        if font_path is None:
+            return None
         try:
             return ImageFont.truetype(font_path, size)
         except OSError:
@@ -623,20 +875,34 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
     pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil)
     try:
-        font_small = ImageFont.truetype("arial.ttf", 14)
+        font_small = ImageFont.truetype(DEFAULT_FONT, 14)
     except OSError:
         font_small = ImageFont.load_default()
 
     for i, b in enumerate(bubbles):
         x, y, w, h = b["x"], b["y"], b["width"], b["height"]
         translation = b.get("translation", "")
-        color = (0, 200, 0) if b["class"] == "text_bubble" else (0, 150, 255)
+        raw_text = b.get("text", "")
+
+        # Цвет рамки сигнализирует о проблеме:
+        # красный = OCR не дал текста, оранжевый = OCR есть, перевода нет,
+        # зелёный = норм text_bubble, синий = норм text_free
+        if not raw_text:
+            color = (255, 0, 0)         # OCR пустой
+        elif not translation:
+            color = (255, 140, 0)       # есть текст, нет перевода
+        elif b["class"] == "text_bubble":
+            color = (0, 200, 0)
+        else:
+            color = (0, 150, 255)
 
         draw.rectangle([(x, y), (x+w, y+h)], outline=color, width=2)
         draw.rectangle([(x, y-22), (x+18, y)], fill=color)
         draw.text((x+3, y-20), str(i+1), fill=(0, 0, 0), font=font_small)
 
         if not translation:
+            # Не перерисовываем содержимое — оставляем оригинал виден,
+            # чтобы можно было глазами проверить что там было
             continue
 
         padding = 4
@@ -684,20 +950,36 @@ def process_page(image_path: str, page_idx: int,
     )
     print(f"Баблов: {len(text_bubbles)}")
 
+    # Эвристика: мало баблов → возможно это галерея представлений.
+    # Проверка стоит ~1 vision-вызов, но на intro-странице мы сэкономим
+    # обычный analyze_page_full и сразу получим правильные имена в архив.
+    if len(text_bubbles) <= 2:
+        print("\n── Проверка: галерея персонажей? ──")
+        if detect_character_intro_page(image_path):
+            print("\n── Извлечение представлений ──")
+            characters_context = extract_character_intros(image_path, archive, page_idx)
+            print(characters_context)
+
+            # На галереях нечего переводить, но обновим сюжет и сохраним
+            # картинку без изменений
+            manga_ctx.update("Character introduction page.")
+            cv2.imwrite(output_path, img_cv)
+            print(f"\nСохранено (без изменений): {output_path}")
+            print(f"  ⓘ страница представления персонажей — перевод не требуется")
+            return text_bubbles
+
     # 2. OCR
     print("\n── OCR ──")
     for i, b in enumerate(text_bubbles):
         b["text"] = ocr_region(img_cv, b["x"], b["y"], b["width"], b["height"],
                                idx=i + 1, page_idx=page_idx)
 
-    # 3. Персонажи
-    print("\n── Персонажи ──")
-    characters_context = analyze_characters(image_path, archive, page_idx)
+    # 3-4. Совмещённый анализ персонажей + сцены (один vision-вызов)
+    print("\n── Анализ страницы ──")
+    characters_context, page_context, page_summary = analyze_page_full(
+        image_path, archive, manga_ctx, page_idx
+    )
     print(characters_context)
-
-    # 4. Сцена
-    print("\n── Сцена ──")
-    page_context, page_summary = analyze_page(image_path, manga_ctx, characters_context)
     print(f"  context: {page_context}")
     print(f"  summary: {page_summary}")
 
@@ -722,14 +1004,50 @@ def process_page(image_path: str, page_idx: int,
     # 8. Сохраняем аннотированное изображение
     annotated = draw_results(img_cv, text_bubbles)
     cv2.imwrite(output_path, annotated)
+
+    # Сводка по странице
+    empty_ocr = sum(1 for b in text_bubbles if not b.get("text"))
+    no_translation = sum(1 for b in text_bubbles if b.get("text") and not b.get("translation"))
+    ok = len(text_bubbles) - empty_ocr - no_translation
     print(f"\nСохранено: {output_path}")
+    print(f"  ✓ переведено: {ok} | ⚠ без перевода: {no_translation} | ✗ OCR пуст: {empty_ocr}")
     return text_bubbles
 
 
 # ─── обработка директории ─────────────────────────────────────────────────────
 
+def format_duration(seconds: float) -> str:
+    """Форматирует длительность как '1ч 23м 45с' / '23м 45с' / '45.3с'."""
+    if seconds < 60:
+        return f"{seconds:.1f}с"
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}ч {m}м {s}с"
+    return f"{m}м {s}с"
+
+
 def process_directory(input_dir: str, output_dir: str = RESULTS_DIR,
-                      target_lang: str = "Russian"):
+                      target_lang: str = "Russian",
+                      font_path: str = "arial.ttf"):
+    """
+    font_path — путь или имя файла шрифта для рендера переводов.
+    Если в переводах ожидаются CJK-символы (оригинальные имена в скобках),
+    укажите шрифт с их поддержкой, например:
+      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc" (Linux)
+      "C:/Windows/Fonts/YuGothM.ttc" (Windows)
+      "/System/Library/Fonts/Hiragino Sans GB.ttc" (macOS)
+    """
+    # Проверяем что шрифт грузится — иначе CJK-символы будут квадратиками
+    try:
+        ImageFont.truetype(font_path, 12)
+        global DEFAULT_FONT
+        DEFAULT_FONT = font_path
+        print(f"[font] Используется: {font_path}")
+    except OSError:
+        print(f"[font] ⚠ Шрифт '{font_path}' не найден — fallback на arial.ttf. "
+              f"Для CJK-символов установите Noto Sans CJK и передайте его путь.")
+
     files = sorted(
         [f for f in os.listdir(input_dir)
          if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS],
@@ -745,21 +1063,43 @@ def process_directory(input_dir: str, output_dir: str = RESULTS_DIR,
     manga_ctx = MangaContext()
     archive = CharacterArchive("characters.json")
 
+    total_start = time.perf_counter()
+    page_times: list[float] = []
+    failed = 0
+
     for page_idx, filename in enumerate(files, start=1):
         input_path = os.path.join(input_dir, filename)
         name = os.path.splitext(filename)[0]
         output_path = os.path.join(output_dir, f"{name}_translated.png")
+
+        page_start = time.perf_counter()
         try:
             process_page(input_path, page_idx, manga_ctx, archive,
                          output_path, target_lang)
+            elapsed = time.perf_counter() - page_start
+            page_times.append(elapsed)
+            print(f"  ⏱  страница обработана за {format_duration(elapsed)}")
         except Exception as e:
+            failed += 1
             print(f"\n[ERROR] {filename}: {e}")
             import traceback
             traceback.print_exc()
 
+    total_elapsed = time.perf_counter() - total_start
+
     print(f"\n{'='*60}")
-    print(f"Готово! Страниц: {len(files)} | Результаты: {output_dir}")
-    print(f"Архив персонажей: characters.json ({len(archive.characters)} персонажей)")
+    print(f"Готово!")
+    print(f"  Страниц обработано: {len(page_times)} / {len(files)}")
+    if failed:
+        print(f"  Ошибок:             {failed}")
+    print(f"  Общее время:        {format_duration(total_elapsed)}")
+    if page_times:
+        avg = sum(page_times) / len(page_times)
+        print(f"  Среднее на страницу: {format_duration(avg)}")
+        print(f"  Самая быстрая:      {format_duration(min(page_times))}")
+        print(f"  Самая медленная:    {format_duration(max(page_times))}")
+    print(f"  Результаты:         {output_dir}")
+    print(f"  Архив персонажей:   characters.json ({len(archive.characters)} персонажей)")
 
 
 if __name__ == "__main__":
@@ -767,4 +1107,8 @@ if __name__ == "__main__":
         input_dir="input",
         output_dir="results",
         target_lang="Russian",
+        # Для японских имён в скобках укажите CJK-шрифт, например:
+        #   font_path="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+        #   font_path="C:/Windows/Fonts/YuGothM.ttc"
+        font_path="arial.ttf",
     )
