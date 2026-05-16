@@ -1,7 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
-chcp 65001 > nul
-title Kotoba — Manga Translator
+title Kotoba Manga Translator
 
 cd /d "%~dp0"
 
@@ -13,24 +12,24 @@ set "GET_PIP_URL=https://bootstrap.pypa.io/get-pip.py"
 set "DEPS_MARKER=%PY_DIR%\.deps_installed"
 
 REM --- 1. Install portable Python if missing ---
-if exist "%PY_EXE%" goto :have_python
+if exist "%PY_EXE%" goto have_python
 
 echo.
 echo [setup] First run - downloading portable Python %PY_VERSION%
 echo One-time setup. Approx 10 MB download.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '%PY_URL%' -OutFile 'python_embed.zip' -UseBasicParsing"
-if errorlevel 1 goto :download_failed
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri $env:PY_URL -OutFile 'python_embed.zip' -UseBasicParsing"
+if errorlevel 1 goto download_failed
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path 'python_embed.zip' -DestinationPath '%PY_DIR%' -Force"
-if errorlevel 1 goto :extract_failed
+powershell -NoProfile -Command "Expand-Archive -Path 'python_embed.zip' -DestinationPath $env:PY_DIR -Force"
+if errorlevel 1 goto extract_failed
 
 del python_embed.zip
 
 REM Patch python*._pth to enable site-packages.
-REM Embeddable distribution ships with an isolated config; we need to uncomment
-REM 'import site' and add Lib\site-packages so installed packages are visible.
+REM Embeddable distribution is isolated by default. We need to uncomment
+REM 'import site' and add Lib\site-packages to its search path.
 set "PATCH=%PY_DIR%\_patch_pth.py"
 > "%PATCH%" echo import glob, sys, os
 >> "%PATCH%" echo def fix^(p^):
@@ -40,15 +39,15 @@ set "PATCH=%PY_DIR%\_patch_pth.py"
 >> "%PATCH%" echo [fix^(p^) for p in glob.glob^(os.path.join^(sys.argv[1], 'python*._pth'^)^)]
 
 "%PY_EXE%" "%PATCH%" "%PY_DIR%"
-if errorlevel 1 goto :patch_failed
+if errorlevel 1 goto patch_failed
 del "%PATCH%"
 
 echo [setup] Installing pip into portable Python...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '%GET_PIP_URL%' -OutFile '%PY_DIR%\get-pip.py' -UseBasicParsing"
-if errorlevel 1 goto :pip_bootstrap_failed
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri $env:GET_PIP_URL -OutFile (Join-Path $env:PY_DIR 'get-pip.py') -UseBasicParsing"
+if errorlevel 1 goto pip_bootstrap_failed
 
 "%PY_EXE%" "%PY_DIR%\get-pip.py" --no-warn-script-location
-if errorlevel 1 goto :pip_install_failed
+if errorlevel 1 goto pip_install_failed
 del "%PY_DIR%\get-pip.py"
 
 echo.
@@ -62,19 +61,17 @@ set "NEED_INSTALL="
 if not exist "%DEPS_MARKER%" set "NEED_INSTALL=1"
 if exist "%DEPS_MARKER%" call :check_req_mtime
 
-if not defined NEED_INSTALL goto :deps_ok
+if not defined NEED_INSTALL goto deps_ok
 
 echo [setup] Installing dependencies into portable Python...
 echo This will take several minutes on first run.
 echo.
 
 "%PY_EXE%" -m pip install --upgrade pip
-if errorlevel 1 goto :pip_deps_failed
+if errorlevel 1 goto pip_deps_failed
 
-REM --upgrade гарантирует что CPU-сборка torch будет заменена на CUDA-сборку
-REM (или наоборот) если изменился --extra-index-url в requirements.txt
 "%PY_EXE%" -m pip install --upgrade -r requirements.txt
-if errorlevel 1 goto :pip_deps_failed
+if errorlevel 1 goto pip_deps_failed
 
 echo. > "%DEPS_MARKER%"
 echo.
@@ -85,12 +82,12 @@ echo.
 
 REM --- 3. Launch server ---
 "%PY_EXE%" setup.py
-if errorlevel 1 goto :server_failed
+if errorlevel 1 goto server_failed
 pause
 exit /b 0
 
 
-REM --- Helper: compare mtimes, sets NEED_INSTALL if requirements.txt is newer ---
+REM --- Helper: compare mtimes ---
 :check_req_mtime
 "%PY_EXE%" -c "import os,sys; sys.exit(0 if os.path.getmtime('requirements.txt') <= os.path.getmtime(sys.argv[1]) else 1)" "%DEPS_MARKER%"
 if errorlevel 1 set "NEED_INSTALL=1"
