@@ -14,7 +14,7 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 <table>
 <tr>
 <th width="50%">Original (Chinese)</th>
-<th width="50%">Kotoba → Russian</th>
+<th width="50%">Kotoba → English</th>
 </tr>
 <tr>
 <td><img src="docs/sample_original.jpg" alt="Original page from Pepper&Carrot"></td>
