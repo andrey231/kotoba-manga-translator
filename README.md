@@ -57,7 +57,7 @@ A **Fast mode** toggle skips the page-analysis and attribution stages — useful
 - **Windows 10/11, Linux, or macOS** (Apple Silicon supported)
 - **Ollama** — install from https://ollama.com and pull a few models:
   ```
-  ollama pull gemma3:27b   # or any vision-capable model: llava, gemma4, qwen2.5-vl, etc.
+  ollama pull gemma4:26b   # or any vision-capable model: llava, gemma4, qwen2.5-vl, etc.
   ollama pull glm-ocr      # OCR model
   ```
 - **~6 GB free disk space** for the portable Python environment
