@@ -1,0 +1,24 @@
+# PyTorch CUDA wheels (RTX cards, 8x faster than CPU)
+# Если CUDA не нужна, удалите следующую строку — поставится CPU-сборка
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# Компьютерное зрение
+opencv-python>=4.10
+numpy>=1.26
+
+# Глубокое обучение
+torch>=2.3                  # включая поддержку TorchScript для LaMa
+torchvision>=0.18           # требуется transformers для AutoImageProcessor
+transformers>=4.44          # RT-DETRv2 для детекции баблов
+huggingface_hub>=0.24       # скачивание anime-big-lama
+
+# Изображения и шрифты
+Pillow>=10.4
+
+# HTTP (Ollama API)
+requests>=2.32
+
+# Веб-интерфейс
+fastapi>=0.110
+uvicorn[standard]>=0.29     # ASGI-сервер + поддержка WebSocket
+python-multipart>=0.0.9     # парсинг multipart/form-data для загрузки файлов

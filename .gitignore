@@ -1,0 +1,77 @@
+# ── Portable Python environment ──────────────────────────────────────────
+# Created by run.bat / run.sh on first launch. Several GB, can be regenerated.
+python_embed/
+python_embed.zip
+python_embed.tar.gz
+
+# ── Regular virtual environments ─────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Runtime user data ────────────────────────────────────────────────────
+# Uploaded pages, generated translations, per-job state. Personal/temporary.
+web_data/
+
+# The auto-built character archive — personal to each user's chapter history.
+# Comment this line out if you want to commit a starter archive.
+characters.json
+
+# Error logs from translation jobs
+errors.log
+*.errors.log
+
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ── IDE / editor ─────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Model caches (lives in ~/.cache, but if a user moves it locally) ─────
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.onnx
+*.gguf
+
+# ── Test/debug artifacts ─────────────────────────────────────────────────
+crops/
+debug/
+test_output/
+/results/
+/uploads/
+/jobs/
+
+# ── Secrets ──────────────────────────────────────────────────────────────
+.env
+.env.local
+*.key
+huggingface_token.txt
+
+# ── OS / build ───────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+dist/
+build/

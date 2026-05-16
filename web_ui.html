@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Kotoba — Manga Translator</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; padding: 0;
+    background: #1a1a1a; color: #e0e0e0;
+    min-height: 100vh;
+  }
+  header {
+    background: #0f0f0f; padding: 16px 24px;
+    border-bottom: 1px solid #333;
+    display: flex; gap: 16px; align-items: center;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 500; color: #f0f0f0; }
+  .tabs { display: flex; gap: 4px; margin-left: 24px; flex: 1; }
+  .tab {
+    padding: 8px 16px; cursor: pointer; border-radius: 6px;
+    color: #999; font-size: 14px; transition: all 0.15s;
+  }
+  .tab:hover { background: #222; color: #ddd; }
+  .tab.active { background: #2a4d7a; color: #fff; }
+  .lang-switcher {
+    display: flex; gap: 4px; background: #222;
+    padding: 4px; border-radius: 6px;
+  }
+  .lang-btn {
+    padding: 4px 10px; cursor: pointer; border-radius: 4px;
+    font-size: 12px; color: #999; transition: all 0.15s;
+  }
+  .lang-btn.active { background: #2a4d7a; color: #fff; }
+  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Translate panel */
+  .upload-zone {
+    border: 2px dashed #444; border-radius: 12px;
+    padding: 60px 20px; text-align: center;
+    cursor: pointer; transition: all 0.15s;
+    background: #222;
+  }
+  .upload-zone:hover, .upload-zone.drag {
+    border-color: #4a7fc0; background: #1e2a3a;
+  }
+  .upload-zone p { margin: 8px 0; color: #999; }
+  .upload-zone strong { color: #ddd; }
+  .config {
+    margin-top: 24px; display: grid;
+    grid-template-columns: 1fr 1fr; gap: 16px;
+    background: #222; padding: 20px; border-radius: 12px;
+  }
+  .config label { display: block; font-size: 12px; color: #999; margin-bottom: 6px; }
+  .config input, .config select {
+    width: 100%; padding: 8px 10px;
+    background: #1a1a1a; border: 1px solid #444;
+    color: #e0e0e0; border-radius: 6px; font-size: 14px;
+  }
+  .config .checkbox { display: flex; align-items: center; gap: 8px; }
+  .config .checkbox input { width: auto; }
+
+  button {
+    padding: 10px 20px; background: #2a4d7a;
+    color: #fff; border: none; border-radius: 6px;
+    cursor: pointer; font-size: 14px; transition: all 0.15s;
+  }
+  button:hover { background: #3a5d8a; }
+  button:disabled { background: #333; color: #666; cursor: not-allowed; }
+  .btn-secondary { background: #3a3a3a; }
+  .btn-secondary:hover { background: #4a4a4a; }
+  .btn-danger { background: #802a2a; }
+  .btn-danger:hover { background: #a03a3a; }
+
+  /* Progress */
+  .progress-wrapper { margin-top: 24px; }
+  .progress-bar {
+    height: 8px; background: #2a2a2a; border-radius: 4px;
+    overflow: hidden; margin: 12px 0;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, #2a4d7a, #4a7fc0);
+    transition: width 0.3s; width: 0%;
+  }
+  .progress-meta { display: flex; justify-content: space-between; font-size: 13px; color: #999; }
+
+  /* Export bar — appears under the progress log */
+  .export-bar {
+    margin-top: 16px;
+    display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    background: #1a1a1a; border-radius: 8px;
+    border: 1px solid #2a2a2a;
+  }
+  .export-bar .export-hint {
+    color: #888; font-size: 13px; margin-right: auto;
+  }
+  .export-bar button {
+    padding: 8px 14px; font-size: 13px;
+  }
+
+  /* Page grid */
+  .pages-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px; margin-top: 24px;
+  }
+  .page-card {
+    background: #222; border-radius: 8px; overflow: hidden;
+    cursor: pointer; transition: transform 0.15s;
+    position: relative;
+  }
+  .page-card:hover { transform: translateY(-2px); }
+  .page-card img { width: 100%; display: block; }
+  .page-card .meta {
+    padding: 10px 12px; font-size: 12px; color: #999;
+    display: flex; justify-content: space-between;
+  }
+
+  /* Skeleton for in-progress page */
+  .page-card.processing {
+    cursor: default; pointer-events: none;
+  }
+  .page-card.processing img {
+    filter: blur(8px) brightness(0.4);
+    transition: filter 0.3s;
+  }
+  .page-card .skeleton-overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px; pointer-events: none;
+  }
+  .spinner {
+    width: 48px; height: 48px;
+    border: 4px solid rgba(255, 255, 255, 0.1);
+    border-top-color: #4a7fc0;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .skeleton-stage {
+    color: #fff; font-size: 14px; font-weight: 500;
+    text-align: center; padding: 0 16px;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  }
+  .skeleton-stage .substep {
+    display: block; font-size: 12px; font-weight: 400;
+    color: #ccc; margin-top: 4px;
+  }
+  /* Placeholder card when we don't have a thumbnail yet */
+  .page-card.processing .placeholder {
+    width: 100%; aspect-ratio: 2 / 3;
+    background: linear-gradient(135deg, #2a2a2a, #1a1a1a);
+  }
+
+  /* Editor */
+  .editor-layout {
+    display: grid; grid-template-columns: 2fr 1fr; gap: 24px;
+    height: calc(100vh - 180px);
+  }
+  .editor-image {
+    background: #222; border-radius: 8px; overflow: auto;
+    position: relative;
+  }
+  .editor-image img { width: 100%; display: block; }
+  .editor-side {
+    background: #222; border-radius: 8px;
+    padding: 16px; overflow-y: auto;
+  }
+  .bubble-item {
+    background: #1a1a1a; border-radius: 6px;
+    padding: 12px; margin-bottom: 10px;
+    border-left: 3px solid #2a4d7a;
+  }
+  .bubble-item .num { font-weight: 600; color: #4a7fc0; font-size: 12px; }
+  .bubble-item .original {
+    color: #777; font-size: 12px; margin: 6px 0;
+    font-family: monospace;
+  }
+  .bubble-item .speaker { font-size: 11px; color: #999; margin-bottom: 6px; }
+  .bubble-item textarea {
+    width: 100%; min-height: 60px;
+    background: #2a2a2a; border: 1px solid #444;
+    color: #e0e0e0; border-radius: 4px;
+    padding: 6px 8px; font-size: 13px; resize: vertical;
+    font-family: inherit;
+  }
+  .bubble-item .bubble-style {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 6px; font-size: 12px; color: #aaa;
+    flex-wrap: wrap;
+  }
+  .bubble-item .bubble-style label {
+    margin: 0; font-size: 12px; color: #888;
+  }
+  .bubble-item .bubble-style input[type="text"] {
+    flex: 1; min-width: 90px;
+    background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;
+    border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  .bubble-item .bubble-style input[type="number"] {
+    width: 64px;
+    background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;
+    border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  .editor-toolbar {
+    display: flex; gap: 8px; justify-content: space-between;
+    padding-bottom: 12px; margin-bottom: 12px;
+    border-bottom: 1px solid #333;
+  }
+  .editor-toolbar select {
+    background: #2a2a2a; border: 1px solid #444;
+    color: #e0e0e0; border-radius: 4px; padding: 6px 10px;
+  }
+
+  /* Characters */
+  .characters-list { display: grid; gap: 12px; }
+  .character-card {
+    background: #222; border-radius: 8px; padding: 16px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 16px;
+    align-items: start;
+  }
+  .character-card .field label {
+    display: block; font-size: 11px; color: #888;
+    margin-bottom: 4px; text-transform: uppercase;
+  }
+  .character-card .field input,
+  .character-card .field textarea {
+    width: 100%; background: #1a1a1a; border: 1px solid #333;
+    color: #e0e0e0; border-radius: 4px; padding: 6px 8px;
+    font-size: 13px; font-family: inherit;
+  }
+  .character-card .field textarea { min-height: 40px; resize: vertical; }
+  .character-card .id-tag {
+    grid-column: 1 / -1;
+    font-family: monospace; font-size: 11px; color: #666;
+  }
+
+  /* Log */
+  .log {
+    margin-top: 12px; max-height: 200px; overflow-y: auto;
+    background: #0f0f0f; border-radius: 6px;
+    padding: 12px; font-family: monospace; font-size: 12px;
+    color: #aaa;
+  }
+  .log .ok { color: #6fcf97; }
+  .log .err { color: #eb5757; }
+  .log .warn { color: #f2c94c; }
+
+  .empty {
+    text-align: center; padding: 60px 20px;
+    color: #666; font-style: italic;
+  }
+
+  /* Job id pill in header */
+  .job-id-pill {
+    display: none; align-items: center; gap: 8px;
+    background: #1e2a3a; border: 1px solid #2a4d7a;
+    border-radius: 6px; padding: 4px 10px;
+    font-size: 12px; color: #aac4e0;
+    margin-right: 12px;
+  }
+  .job-id-pill.visible { display: inline-flex; }
+  .job-id-pill .job-label { color: #6a8aaa; }
+  .job-id-pill code {
+    background: rgba(0, 0, 0, 0.3); padding: 2px 6px;
+    border-radius: 3px; font-family: monospace;
+    user-select: all; cursor: text;
+  }
+  .help-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; margin-left: 8px;
+    border-radius: 50%; background: #444; color: #ccc;
+    font-size: 11px; font-weight: bold; cursor: help;
+    position: relative; transition: background 0.15s;
+  }
+  .help-icon:hover { background: #4a7fc0; color: #fff; }
+  .help-icon .tooltip {
+    visibility: hidden; opacity: 0;
+    position: absolute; top: 24px; left: -120px;
+    width: 280px; background: #0f0f0f;
+    border: 1px solid #444; border-radius: 8px;
+    padding: 12px; font-size: 12px; font-weight: normal;
+    color: #ddd; text-align: left;
+    z-index: 100; transition: opacity 0.15s;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  .help-icon:hover .tooltip { visibility: visible; opacity: 1; }
+  .tooltip .legend-row {
+    display: flex; align-items: center; gap: 8px; margin: 6px 0;
+  }
+  .tooltip .swatch {
+    width: 16px; height: 16px; border-radius: 3px;
+    border: 2px solid; background: transparent;
+    flex-shrink: 0;
+  }
+  .tooltip .label { color: #ccc; }
+  .tooltip h4 {
+    margin: 0 0 8px 0; font-size: 13px; color: #fff;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📖 <span data-i18n="app_title">Kotoba</span></h1>
+  <div class="tabs">
+    <div class="tab active" data-panel="translate"  data-i18n="tab_translate">Translate</div>
+    <div class="tab" data-panel="editor"             data-i18n="tab_editor">Editor</div>
+    <div class="tab" data-panel="characters"         data-i18n="tab_characters">Characters</div>
+  </div>
+  <div class="job-id-pill" id="job-id-pill">
+    <span class="job-label" data-i18n="job_id_label">Job ID:</span>
+    <code id="job-id-display">—</code>
+    <span class="help-icon" tabindex="0">?
+      <div class="tooltip" style="left: -200px;">
+        <h4 data-i18n="job_id_what_title">What is Job ID?</h4>
+        <div data-i18n="job_id_what_desc">A unique identifier for the current translation job. Use it to reopen this chapter in the Editor tab later — copy the ID and paste it via the "Load job..." button. Results stay available on the server as long as you do not clear them manually.</div>
+      </div>
+    </span>
+  </div>
+  <div class="lang-switcher">
+    <div class="lang-btn active" data-lang="en">EN</div>
+    <div class="lang-btn"        data-lang="ru">RU</div>
+  </div>
+</header>
+
+<main>
+
+<!-- ─── Panel: Translate ─── -->
+<div class="panel active" id="panel-translate">
+  <div class="upload-zone" id="upload-zone">
+    <p><strong data-i18n="upload_drop">Drop chapter pages here</strong></p>
+    <p data-i18n="upload_or_click">or click to choose files (jpg, png, webp)</p>
+    <input type="file" id="file-input" multiple accept="image/*" style="display:none">
+  </div>
+
+  <div class="config">
+    <div>
+      <label data-i18n="cfg_lang">Translation language</label>
+      <select id="cfg-lang">
+        <option value="English">English</option>
+        <option value="Russian">Русский</option>
+        <option value="Spanish">Español</option>
+        <option value="French">Français</option>
+        <option value="German">Deutsch</option>
+        <option value="Japanese">日本語</option>
+        <option value="Chinese">中文</option>
+      </select>
+    </div>
+    <div>
+      <label>
+        <span data-i18n="cfg_model">Vision/LLM model</span>
+        <span class="help-icon" tabindex="0">?
+          <div class="tooltip">
+            <div data-i18n="cfg_model_help">Multimodal Ollama models...</div>
+          </div>
+        </span>
+      </label>
+      <select id="cfg-model">
+        <option data-i18n="cfg_model_loading">Loading model list...</option>
+      </select>
+    </div>
+    <div>
+      <label data-i18n="cfg_font">Font path</label>
+      <input id="cfg-font" value="arial.ttf">
+    </div>
+    <div style="display:flex; gap:24px; flex-wrap:wrap; align-items:center;">
+      <div class="checkbox">
+        <input type="checkbox" id="cfg-debug">
+        <label for="cfg-debug" style="margin:0; font-size:14px;" data-i18n="cfg_debug">Debug boxes on result</label>
+        <span class="help-icon" tabindex="0">?
+          <div class="tooltip">
+            <h4 data-i18n="legend_title">Box colors on result</h4>
+            <div class="legend-row">
+              <div class="swatch" style="border-color: #00c800;"></div>
+              <span class="label" data-i18n="legend_green">Green — text bubble translated successfully</span>
+            </div>
+            <div class="legend-row">
+              <div class="swatch" style="border-color: #0096ff;"></div>
+              <span class="label" data-i18n="legend_blue">Blue — free-floating text (SFX) translated</span>
+            </div>
+            <div class="legend-row">
+              <div class="swatch" style="border-color: #ff8c00;"></div>
+              <span class="label" data-i18n="legend_orange">Orange — OCR found text but translation failed</span>
+            </div>
+            <div class="legend-row">
+              <div class="swatch" style="border-color: #ff0000;"></div>
+              <span class="label" data-i18n="legend_red">Red — OCR returned no text</span>
+            </div>
+          </div>
+        </span>
+      </div>
+      <div class="checkbox">
+        <input type="checkbox" id="cfg-llm-debug">
+        <label for="cfg-llm-debug" style="margin:0; font-size:14px;" data-i18n="cfg_llm_debug">Verbose LLM logging (server console)</label>
+        <span class="help-icon" tabindex="0">?
+          <div class="tooltip">
+            <span data-i18n="cfg_llm_debug_help">When enabled, every prompt sent to the LLM and every response from it is printed to the server console. Useful for diagnosing translation issues. Slows things down and produces a lot of output.</span>
+          </div>
+        </span>
+      </div>
+      <div class="checkbox">
+        <input type="checkbox" id="cfg-fast-mode">
+        <label for="cfg-fast-mode" style="margin:0; font-size:14px;" data-i18n="cfg_fast_mode">Fast mode (no context)</label>
+        <span class="help-icon" tabindex="0">?
+          <div class="tooltip">
+            <span data-i18n="cfg_fast_mode_help">Skip page analysis and speaker attribution. Saves 2-3 vision-LLM calls per page (~30-60 seconds), but bubbles are translated without scene context and the character archive is not updated. Useful for quick drafts.</span>
+          </div>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="progress-wrapper" id="progress-wrap" style="display:none">
+    <div class="progress-meta">
+      <span id="progress-text" data-i18n="progress_preparing">Preparing...</span>
+      <span id="progress-time"></span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="log" id="log"></div>
+    <div class="export-bar" id="export-bar">
+      <span class="export-hint" data-i18n="export_hint">Download translated chapter:</span>
+      <button id="btn-export-zip" class="btn-secondary" disabled>
+        <span data-i18n="export_zip">📦 Download ZIP</span>
+      </button>
+      <button id="btn-export-cbz" class="btn-secondary" disabled>
+        <span data-i18n="export_cbz">📚 Download CBZ</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="pages-grid" id="pages-grid"></div>
+</div>
+
+<!-- ─── Panel: Editor ─── -->
+<div class="panel" id="panel-editor">
+  <div class="editor-toolbar">
+    <div>
+      <label style="font-size:12px; color:#999;" data-i18n="editor_page">Page:</label>
+      <select id="editor-page-select"></select>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn-secondary" id="btn-reload-job" data-i18n="editor_load_job">Load job...</button>
+      <button id="btn-rerender" data-i18n="editor_rerender">💾 Save and re-render</button>
+    </div>
+  </div>
+  <div class="editor-layout">
+    <div class="editor-image" id="editor-image">
+      <div class="empty" data-i18n="editor_empty">Load or select a job to edit</div>
+    </div>
+    <div class="editor-side" id="editor-side">
+      <div class="empty" data-i18n="editor_side_empty">Bubbles will appear here</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Panel: Characters ─── -->
+<div class="panel" id="panel-characters">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2 style="margin:0; font-size:18px;" data-i18n="characters_title">Character archive</h2>
+    <div style="display:flex; gap:8px;">
+      <button class="btn-secondary" id="btn-reload-chars" data-i18n="characters_reload">Reload</button>
+      <button class="btn-danger" id="btn-clear-chars" data-i18n="characters_clear">🗑 Clear all</button>
+      <button id="btn-save-chars" data-i18n="characters_save">💾 Save</button>
+    </div>
+  </div>
+  <div class="characters-list" id="characters-list">
+    <div class="empty" data-i18n="loading">Loading...</div>
+  </div>
+</div>
+
+</main>
+
+<script>
+//═════════════════════════════════════════════════════════════════════
+// i18n
+//═════════════════════════════════════════════════════════════════════
+
+const I18N = {
+  en: {
+    app_title:        "Kotoba",
+    tab_translate:    "Translate",
+    tab_editor:       "Editor",
+    tab_characters:   "Characters",
+    upload_drop:      "Drop chapter pages here",
+    upload_or_click:  "or click to choose files (jpg, png, webp)",
+    cfg_lang:         "Translation language",
+    cfg_font:         "Font path",
+    cfg_debug:        "Debug boxes on result",
+    cfg_llm_debug:    "Verbose LLM logging (server console)",
+    cfg_llm_debug_help: "When enabled, every prompt sent to the LLM and every response from it is printed to the server console. Useful for diagnosing translation issues. Slows things down and produces a lot of output.",
+    cfg_fast_mode:    "Fast mode (no context)",
+    cfg_fast_mode_help: "Skip page analysis and speaker attribution. Saves 2-3 vision-LLM calls per page (~30-60 seconds), but bubbles are translated without scene context and the character archive is not updated. Useful for quick drafts.",
+    legend_title:     "Box colors on result",
+    legend_green:     "Green — text bubble translated successfully",
+    legend_blue:      "Blue — free-floating text (SFX) translated",
+    legend_orange:    "Orange — OCR found text but translation failed",
+    legend_red:       "Red — OCR returned no text",
+    cfg_model:        "Vision/LLM model",
+    cfg_model_loading: "Loading model list...",
+    cfg_model_none:   "No models found in Ollama",
+    cfg_model_help:   "Multimodal Ollama models, used for character analysis, scene understanding, attribution and translation. Click 'Enter manually...' if your model is not listed.",
+    job_id_label:     "Job ID:",
+    job_id_what_title: "What is Job ID?",
+    job_id_what_desc: "A unique identifier for the current translation job. Use it to reopen this chapter in the Editor tab later — copy the ID and paste it via the \"Load job...\" button. Results stay available on the server as long as you do not clear them manually.",
+    progress_preparing: "Preparing...",
+    editor_page:      "Page:",
+    editor_load_job:  "Load job...",
+    editor_rerender:  "💾 Save and re-render",
+    editor_font:      "Font:",
+    editor_size:      "Size:",
+    editor_empty:     "Load or select a job to edit",
+    editor_side_empty: "Bubbles will appear here",
+    characters_title: "Character archive",
+    characters_reload: "Reload",
+    characters_save:  "💾 Save",
+    characters_clear: "🗑 Clear all",
+    characters_clear_confirm: "Delete the ENTIRE character archive? This cannot be undone.",
+    loading:          "Loading...",
+    // Stages shown over processing pages
+    stage_detect:     "Detecting bubbles",
+    stage_ocr:        "Reading text (OCR)",
+    stage_analyze:    "Analyzing scene",
+    stage_attribute:  "Identifying speakers",
+    stage_translate:  "Translating",
+    stage_inpaint:    "Inpainting & rendering",
+    stage_queue:      "In queue",
+    sub_pageN:        "Page %1 of %2",
+    // Log/runtime
+    upload_loading:   "Uploading %1 files...",
+    upload_done:      "Job created: %1, pages: %2",
+    upload_error:     "Error: %1",
+    ws_connected:     "WebSocket connected, starting...",
+    ws_error:         "WebSocket error",
+    ws_closed:        "WebSocket closed",
+    starting_n:       "Starting processing of %1 pages...",
+    page_done_log:    "✓ Page %1: %2 bubbles, %3s",
+    done_summary:     "✓ Done: %1/%2, %3",
+    done_errors:      "⚠ Failures: %1",
+    issues_logged:    "Issues recorded: %1",
+    elapsed_label:    "Elapsed:",
+    remaining_label:  "ETA:",
+    finished_label:   "Done!",
+    page_of:          "Page %1 / %2",
+    chars_count:      "%1 bubbles",
+    pick_images:      "Please choose images",
+    prompt_job_id:    "Enter job_id (visible while processing):",
+    job_not_found:    "Could not load: %1",
+    open_page_first:  "Open a page first",
+    rerendering:      "Re-rendering...",
+    rerender_failed:  "Re-render failed: %1",
+    saved_n_chars:    "Saved: %1 characters",
+    delete_char_q:    "Delete character %1?",
+    empty_archive:    "Archive is empty. Run a translation to populate.",
+    no_bubbles:       "No bubbles",
+    no_ocr:           "(empty OCR)",
+    export_hint:      "Download translated chapter:",
+    export_zip:       "📦 Download ZIP",
+    export_cbz:       "📚 Download CBZ",
+  },
+  ru: {
+    app_title:        "Kotoba",
+    tab_translate:    "Перевод",
+    tab_editor:       "Редактор",
+    tab_characters:   "Персонажи",
+    upload_drop:      "Перетащите страницы главы сюда",
+    upload_or_click:  "или нажмите чтобы выбрать файлы (jpg, png, webp)",
+    cfg_lang:         "Язык перевода",
+    cfg_font:         "Путь к шрифту",
+    cfg_debug:        "Дебаг-рамки на результате",
+    cfg_llm_debug:    "Подробный лог LLM (в консоли сервера)",
+    cfg_llm_debug_help: "Когда включено, каждый запрос к LLM и каждый ответ от неё печатаются в консоль сервера. Полезно для диагностики проблем с переводом. Замедляет работу и производит много вывода.",
+    cfg_fast_mode:    "Быстрый режим (без контекста)",
+    cfg_fast_mode_help: "Пропускает анализ страницы и определение спикеров. Экономит 2-3 vision-вызова на страницу (≈30-60 секунд), но баблы переводятся без контекста сцены, и архив персонажей не обновляется. Полезно для быстрых черновых переводов.",
+    legend_title:     "Цвета рамок на результате",
+    legend_green:     "Зелёный — бабл переведён успешно",
+    legend_blue:      "Синий — текст вне бабла (SFX) переведён",
+    legend_orange:    "Оранжевый — OCR нашёл текст, но перевод не удался",
+    legend_red:       "Красный — OCR не вернул текста",
+    cfg_model:        "Vision/LLM модель",
+    cfg_model_loading: "Загружаем список моделей...",
+    cfg_model_none:   "Модели в Ollama не найдены",
+    cfg_model_help:   "Мультимодальные модели Ollama для анализа персонажей, сцены, атрибуции и перевода. Если нужной модели нет в списке — нажмите «Ввести вручную...».",
+    job_id_label:     "Job ID:",
+    job_id_what_title: "Что такое Job ID?",
+    job_id_what_desc: "Уникальный идентификатор текущего перевода. Используется чтобы потом открыть главу заново на вкладке «Редактор» — скопируйте ID и вставьте через кнопку «Загрузить джоб...». Результаты на сервере хранятся пока вы их вручную не очистите.",
+    progress_preparing: "Готовится...",
+    editor_page:      "Страница:",
+    editor_load_job:  "Загрузить джоб...",
+    editor_rerender:  "💾 Сохранить и перерисовать",
+    editor_font:      "Шрифт:",
+    editor_size:      "Размер:",
+    editor_empty:     "Загрузите или выберите джоб для редактирования",
+    editor_side_empty: "Баблы появятся здесь",
+    characters_title: "Архив персонажей",
+    characters_reload: "Обновить",
+    characters_save:  "💾 Сохранить",
+    characters_clear: "🗑 Очистить всё",
+    characters_clear_confirm: "Удалить ВЕСЬ архив персонажей? Это действие необратимо.",
+    loading:          "Загрузка...",
+    stage_detect:     "Поиск баблов",
+    stage_ocr:        "Распознавание текста (OCR)",
+    stage_analyze:    "Анализ сцены",
+    stage_attribute:  "Определение говорящих",
+    stage_translate:  "Перевод",
+    stage_inpaint:    "Инпейтинг и отрисовка",
+    stage_queue:      "В очереди",
+    sub_pageN:        "Страница %1 из %2",
+    upload_loading:   "Загружаем %1 файлов...",
+    upload_done:      "Job создан: %1, страниц: %2",
+    upload_error:     "Ошибка: %1",
+    ws_connected:     "WebSocket подключён, запускаем...",
+    ws_error:         "WebSocket ошибка",
+    ws_closed:        "WebSocket закрыт",
+    starting_n:       "Начинаем обработку %1 страниц...",
+    page_done_log:    "✓ Страница %1: %2 баблов, %3с",
+    done_summary:     "✓ Готово: %1/%2, %3",
+    done_errors:      "⚠ Ошибок: %1",
+    issues_logged:    "Зафиксировано проблем: %1",
+    elapsed_label:    "Прошло:",
+    remaining_label:  "Осталось ≈",
+    finished_label:   "Готово!",
+    page_of:          "Страница %1 / %2",
+    chars_count:      "%1 баблов",
+    pick_images:      "Выберите изображения",
+    prompt_job_id:    "Введите job_id (виден во время обработки):",
+    job_not_found:    "Не удалось загрузить: %1",
+    open_page_first:  "Откройте страницу",
+    rerendering:      "Перерисовка...",
+    rerender_failed:  "Не удалось перерисовать: %1",
+    saved_n_chars:    "Сохранено: %1 персонажей",
+    delete_char_q:    "Удалить персонажа %1?",
+    empty_archive:    "Архив пуст. Запустите перевод, чтобы заполнить.",
+    no_bubbles:       "Баблов нет",
+    no_ocr:           "(пустой OCR)",
+    export_hint:      "Скачать переведённую главу:",
+    export_zip:       "📦 Скачать ZIP",
+    export_cbz:       "📚 Скачать CBZ",
+  },
+};
+
+let LANG = localStorage.getItem("lang") || "en";
+
+function t(key, ...args) {
+  let s = (I18N[LANG] && I18N[LANG][key]) || I18N.en[key] || key;
+  args.forEach((v, i) => { s = s.replace(`%${i + 1}`, v); });
+  return s;
+}
+
+function applyI18n() {
+  document.documentElement.lang = LANG;
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll(".lang-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.lang === LANG);
+  });
+}
+
+document.querySelectorAll(".lang-btn").forEach(btn => {
+  btn.onclick = () => {
+    LANG = btn.dataset.lang;
+    localStorage.setItem("lang", LANG);
+    applyI18n();
+    // Re-render dynamic content where it matters
+    if (currentEditPage) openEditPage(currentEditPage.page);
+    if (Object.keys(charactersData).length) renderCharacters();
+    if ($('cfg-model').options.length) loadModels();
+  };
+});
+
+//═════════════════════════════════════════════════════════════════════
+// state
+//═════════════════════════════════════════════════════════════════════
+
+let currentJobId = null;
+let currentJobPages = [];
+let currentEditPage = null;
+let ws = null;
+let startTime = null;
+let totalPagesGlobal = 0;
+// Map page idx → card element while processing
+const processingCards = {};
+
+const $ = id => document.getElementById(id);
+
+//═════════════════════════════════════════════════════════════════════
+// tabs
+//═════════════════════════════════════════════════════════════════════
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    $('panel-' + tab.dataset.panel).classList.add('active');
+    if (tab.dataset.panel === 'characters') loadCharacters();
+  };
+});
+
+//═════════════════════════════════════════════════════════════════════
+// upload
+//═════════════════════════════════════════════════════════════════════
+
+const uploadZone = $('upload-zone');
+const fileInput = $('file-input');
+
+uploadZone.onclick = () => fileInput.click();
+['dragover', 'dragenter'].forEach(ev => uploadZone.addEventListener(ev, e => {
+  e.preventDefault(); uploadZone.classList.add('drag');
+}));
+['dragleave', 'drop'].forEach(ev => uploadZone.addEventListener(ev, e => {
+  e.preventDefault(); uploadZone.classList.remove('drag');
+}));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  startUpload(Array.from(e.dataTransfer.files));
+});
+fileInput.onchange = () => startUpload(Array.from(fileInput.files));
+
+async function startUpload(files) {
+  files = files.filter(f => f.type.startsWith('image/'));
+  if (!files.length) { alert(t("pick_images")); return; }
+
+  // Natural sort by filename: page2 < page10 (the same logic as the backend uses)
+  files.sort((a, b) => naturalCompare(a.name, b.name));
+
+  // Pre-create skeleton cards immediately so user sees progress
+  $('pages-grid').innerHTML = '';
+  for (const key of Object.keys(processingCards)) delete processingCards[key];
+  currentJobPages = [];   // reset stale data from previous run
+  currentEditPage = null;
+  // Export buttons are disabled until the job finishes
+  $('btn-export-zip').disabled = true;
+  $('btn-export-cbz').disabled = true;
+
+  // Read each file as data-URL for the blurred preview underneath the spinner
+  const previews = await Promise.all(files.map(readFileAsDataURL));
+  totalPagesGlobal = files.length;
+  files.forEach((file, idx) => {
+    const card = makeSkeletonCard(idx + 1, files.length, previews[idx], file.name);
+    processingCards[idx + 1] = card;
+    $('pages-grid').appendChild(card);
+  });
+
+  const form = new FormData();
+  for (const f of files) form.append('files', f);
+  form.append('target_lang', $('cfg-lang').value);
+  form.append('font_path', $('cfg-font').value);
+  form.append('debug', $('cfg-debug').checked ? 'true' : 'false');
+  form.append('llm_model', $('cfg-model').value || '');
+  form.append('llm_debug', $('cfg-llm-debug').checked ? 'true' : 'false');
+  form.append('fast_mode', $('cfg-fast-mode').checked ? 'true' : 'false');
+
+  log(t("upload_loading", files.length));
+  $('progress-wrap').style.display = 'block';
+
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: form });
+    if (!r.ok) throw new Error('Upload failed');
+    const data = await r.json();
+    currentJobId = data.job_id;
+    $('job-id-display').textContent = data.job_id;
+    $('job-id-pill').classList.add('visible');
+    log(t("upload_done", data.job_id, data.total_pages), 'ok');
+    openWebSocket(data.job_id, data.total_pages);
+  } catch (e) {
+    log(t("upload_error", e.message), 'err');
+  }
+}
+
+function readFileAsDataURL(file) {
+  return new Promise(resolve => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => resolve(null);
+    r.readAsDataURL(file);
+  });
+}
+
+function makeSkeletonCard(pageNum, total, previewSrc, filename) {
+  const card = document.createElement('div');
+  card.className = 'page-card processing';
+  card.dataset.page = pageNum;
+
+  const img = document.createElement('img');
+  if (previewSrc) {
+    img.src = previewSrc;
+  } else {
+    img.classList.add('placeholder');
+  }
+  card.appendChild(img);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'skeleton-overlay';
+  overlay.innerHTML = `
+    <div class="spinner"></div>
+    <div class="skeleton-stage">
+      <span class="stage-label">${t("stage_queue")}</span>
+      <span class="substep">${t("sub_pageN", pageNum, total)}</span>
+    </div>
+  `;
+  card.appendChild(overlay);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.innerHTML = `<span>${escapeHtml(filename)}</span><span>—</span>`;
+  card.appendChild(meta);
+
+  return card;
+}
+
+function setCardStage(pageNum, stageKey) {
+  const card = processingCards[pageNum];
+  if (!card) return;
+  const label = card.querySelector('.stage-label');
+  if (label) label.textContent = t(stageKey);
+}
+
+//═════════════════════════════════════════════════════════════════════
+// WebSocket progress
+//═════════════════════════════════════════════════════════════════════
+
+function openWebSocket(jobId, total) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/${jobId}`);
+  ws.onopen = () => {
+    log(t("ws_connected"));
+    ws.send(JSON.stringify({ action: 'start' }));
+    startTime = Date.now();
+    // First page moves from "in queue" to "detecting"
+    setCardStage(1, "stage_detect");
+  };
+  ws.onmessage = ev => handleEvent(JSON.parse(ev.data), total);
+  ws.onerror = () => log(t("ws_error"), 'err');
+  ws.onclose = () => log(t("ws_closed"));
+}
+
+function handleEvent(evt, total) {
+  if (evt.type === 'start') {
+    log(t("starting_n", evt.total), 'ok');
+  } else if (evt.type === 'stage') {
+    // Optional stage update sent from backend, see web.py
+    setCardStage(evt.page, evt.stage_key);
+  } else if (evt.type === 'page_done') {
+    const pct = Math.round(evt.page / total * 100);
+    $('progress-fill').style.width = pct + '%';
+    $('progress-text').textContent = t("page_of", evt.page, total);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const remaining = (elapsed / evt.page) * (total - evt.page);
+    $('progress-time').textContent =
+      `${t("elapsed_label")} ${fmtTime(elapsed)}  •  ${t("remaining_label")} ${fmtTime(remaining)}`;
+    log(t("page_done_log", evt.page, evt.bubbles.length, evt.elapsed.toFixed(1)), 'ok');
+
+    // Cache page data locally so editor can open it without a server round-trip
+    // (avoids races where the JSON file isn't yet flushed when user clicks).
+    const existingIdx = currentJobPages.findIndex(p => p.page === evt.page);
+    const pageRecord = {
+      page: evt.page, filename: evt.filename, url: evt.url,
+      elapsed: evt.elapsed, bubbles: evt.bubbles,
+    };
+    if (existingIdx >= 0) currentJobPages[existingIdx] = pageRecord;
+    else currentJobPages.push(pageRecord);
+    currentJobPages.sort((a, b) => a.page - b.page);
+
+    replaceCardWithResult(evt);
+    // Activate next card as "detecting"
+    if (processingCards[evt.page + 1]) setCardStage(evt.page + 1, "stage_detect");
+  } else if (evt.type === 'finish') {
+    $('progress-fill').style.width = '100%';
+    $('progress-text').textContent = t("finished_label");
+    log(t("done_summary", evt.stats.processed, evt.stats.total_pages,
+          fmtTime(evt.stats.total_seconds)), 'ok');
+    if (evt.stats.failed) log(t("done_errors", evt.stats.failed), 'warn');
+    const issueCount = Object.values(evt.stats.errors || {}).reduce((a, b) => a + b, 0);
+    if (issueCount) log(t("issues_logged", issueCount), 'warn');
+    // Enable export only when there is at least one processed page
+    if (evt.stats.processed > 0) {
+      $('btn-export-zip').disabled = false;
+      $('btn-export-cbz').disabled = false;
+    }
+  } else if (evt.type === 'error') {
+    log(`Error: ${evt.message}`, 'err');
+  }
+}
+
+function replaceCardWithResult(page) {
+  const card = processingCards[page.page];
+  if (!card) return;
+  // Build clean result card in place
+  card.classList.remove('processing');
+  card.innerHTML = `
+    <img src="${page.url}" alt="Page ${page.page}">
+    <div class="meta">
+      <span>${escapeHtml(page.filename)}</span>
+      <span>${t("chars_count", page.bubbles.length)}</span>
+    </div>
+  `;
+  card.onclick = () => openInEditor(page.page);
+  delete processingCards[page.page];
+}
+
+//═════════════════════════════════════════════════════════════════════
+// editor
+//═════════════════════════════════════════════════════════════════════
+
+$('btn-reload-job').onclick = async () => {
+  const jobId = prompt(t("prompt_job_id"), currentJobId || '');
+  if (jobId) loadJob(jobId);
+};
+
+async function loadJob(jobId) {
+  try {
+    const r = await fetch(`/api/job/${jobId}`);
+    if (!r.ok) throw new Error('Job not found');
+    currentJobId = jobId;
+    $('job-id-display').textContent = jobId;
+    $('job-id-pill').classList.add('visible');
+    currentJobPages = await r.json();
+    populatePageSelect();
+    if (currentJobPages.length) openEditPage(currentJobPages[0].page);
+  } catch (e) {
+    alert(t("job_not_found", e.message));
+  }
+}
+
+function populatePageSelect() {
+  const sel = $('editor-page-select');
+  sel.innerHTML = '';
+  currentJobPages.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.page;
+    opt.textContent = `${t("editor_page")} ${p.page} — ${p.filename}`;
+    sel.appendChild(opt);
+  });
+  sel.onchange = () => openEditPage(parseInt(sel.value));
+}
+
+function openInEditor(pageNum) {
+  if (!currentJobId) return;
+  document.querySelector('.tab[data-panel="editor"]').click();
+  // If we already have this page cached from page_done events, use it directly.
+  // Avoids a server round-trip that might return stale or unflushed data.
+  if (currentJobPages.find(p => p.page === pageNum)) {
+    populatePageSelect();
+    openEditPage(pageNum);
+  } else {
+    loadJob(currentJobId).then(() => openEditPage(pageNum));
+  }
+}
+
+function openEditPage(pageNum) {
+  const page = currentJobPages.find(p => p.page === pageNum);
+  if (!page) return;
+  currentEditPage = page;
+  $('editor-page-select').value = pageNum;
+  $('editor-image').innerHTML =
+    `<img src="${page.url}?t=${Date.now()}" alt="Page">`;
+
+  const side = $('editor-side');
+  side.innerHTML = '';
+  if (!page.bubbles.length) {
+    side.innerHTML = `<div class="empty">${t("no_bubbles")}</div>`;
+    return;
+  }
+  page.bubbles.forEach(b => {
+    const item = document.createElement('div');
+    item.className = 'bubble-item';
+    const fontVal = b.font_path || '';
+    const sizeVal = b.font_size != null && b.font_size !== '' ? b.font_size : '';
+    item.innerHTML = `
+      <div class="num">#${b.idx} ${b.speaker !== 'unknown' ? '— ' + escapeHtml(b.speaker) : ''}</div>
+      <div class="speaker">${b.x},${b.y} • ${b.w}×${b.h} • ${b.gender}</div>
+      <div class="original">${escapeHtml(b.text) || t("no_ocr")}</div>
+      <textarea data-idx="${b.idx}" data-field="translation">${escapeHtml(b.translation || '')}</textarea>
+      <div class="bubble-style">
+        <label data-i18n="editor_font">Font:</label>
+        <input type="text" class="bubble-font" data-idx="${b.idx}" data-field="font_path"
+               placeholder="(default)" value="${escapeHtml(fontVal)}">
+        <label data-i18n="editor_size">Size:</label>
+        <input type="number" class="bubble-size" data-idx="${b.idx}" data-field="font_size"
+               placeholder="auto" min="6" max="120" value="${sizeVal}">
+      </div>
+    `;
+    side.appendChild(item);
+  });
+  applyI18n();
+}
+
+$('btn-rerender').onclick = async () => {
+  if (!currentEditPage) { alert(t("open_page_first")); return; }
+  // Собираем updates по idx — каждый бабл может иметь translation/font_path/font_size
+  const byIdx = {};
+  document.querySelectorAll('#editor-side [data-idx]').forEach(el => {
+    const idx = parseInt(el.dataset.idx);
+    if (!byIdx[idx]) byIdx[idx] = { idx };
+    const field = el.dataset.field;
+    if (field === 'font_size') {
+      const v = el.value.trim();
+      byIdx[idx][field] = v === '' ? null : parseInt(v);
+    } else if (field === 'font_path') {
+      byIdx[idx][field] = el.value.trim() || null;
+    } else {
+      byIdx[idx][field] = el.value;
+    }
+  });
+  const updates = Object.values(byIdx);
+  const btn = $('btn-rerender');
+  btn.disabled = true; btn.textContent = t("rerendering");
+  try {
+    const r = await fetch(
+      `/api/job/${currentJobId}/page/${currentEditPage.page}/render`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bubbles: updates }),
+      }
+    );
+    if (!r.ok) throw new Error('render failed');
+    const data = await r.json();
+    updates.forEach(u => {
+      const b = currentEditPage.bubbles.find(x => x.idx === u.idx);
+      if (b) {
+        if ('translation' in u) b.translation = u.translation;
+        if ('font_path' in u) b.font_path = u.font_path;
+        if ('font_size' in u) b.font_size = u.font_size;
+      }
+    });
+    $('editor-image').innerHTML =
+      `<img src="${data.url}?t=${Date.now()}" alt="Page">`;
+  } catch (e) {
+    alert(t("rerender_failed", e.message));
+  } finally {
+    btn.disabled = false; btn.textContent = t("editor_rerender");
+  }
+};
+
+//═════════════════════════════════════════════════════════════════════
+// characters
+//═════════════════════════════════════════════════════════════════════
+
+let charactersData = {};
+
+$('btn-reload-chars').onclick = loadCharacters;
+$('btn-save-chars').onclick = saveCharacters;
+$('btn-clear-chars').onclick = async () => {
+  if (!Object.keys(charactersData).length) return;
+  if (!confirm(t("characters_clear_confirm"))) return;
+  await fetch('/api/characters', { method: 'DELETE' });
+  charactersData = {};
+  renderCharacters();
+};
+
+async function loadCharacters() {
+  const r = await fetch('/api/characters');
+  charactersData = await r.json();
+  renderCharacters();
+}
+
+function renderCharacters() {
+  const list = $('characters-list');
+  list.innerHTML = '';
+  const ids = Object.keys(charactersData);
+  if (!ids.length) {
+    list.innerHTML = `<div class="empty">${t("empty_archive")}</div>`;
+    return;
+  }
+  ids.forEach(cid => {
+    const c = charactersData[cid];
+    const card = document.createElement('div');
+    card.className = 'character-card';
+    const firstSeenLabel = LANG === 'ru' ? 'впервые на стр.' : 'first seen p.';
+    const labelName = LANG === 'ru' ? 'Имя' : 'Name';
+    const labelGender = LANG === 'ru' ? 'Пол' : 'Gender';
+    const labelAppearance = LANG === 'ru' ? 'Внешность' : 'Appearance';
+    const labelNotes = LANG === 'ru' ? 'Заметки' : 'Notes';
+    const btnDelete = LANG === 'ru' ? 'Удалить' : 'Delete';
+    card.innerHTML = `
+      <div class="id-tag">id: ${cid} • ${firstSeenLabel} ${c.first_seen || '?'}</div>
+      <div class="field">
+        <label>${labelName}</label>
+        <input data-id="${cid}" data-field="name" value="${escapeHtml(c.name || '')}">
+      </div>
+      <div class="field">
+        <label>${labelGender}</label>
+        <select data-id="${cid}" data-field="gender">
+          <option ${c.gender === 'male' ? 'selected' : ''}>male</option>
+          <option ${c.gender === 'female' ? 'selected' : ''}>female</option>
+          <option ${c.gender === 'unknown' ? 'selected' : ''}>unknown</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>${labelAppearance}</label>
+        <textarea data-id="${cid}" data-field="appearance">${escapeHtml(c.appearance || '')}</textarea>
+      </div>
+      <button class="btn-danger" data-del="${cid}" style="align-self:center;">${btnDelete}</button>
+      <div class="field" style="grid-column: 1 / -1;">
+        <label>${labelNotes}</label>
+        <textarea data-id="${cid}" data-field="notes">${escapeHtml(c.notes || '')}</textarea>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+
+  list.querySelectorAll('[data-id]').forEach(el => {
+    el.onchange = () => {
+      const id = el.dataset.id, field = el.dataset.field;
+      if (charactersData[id]) charactersData[id][field] = el.value;
+    };
+  });
+  list.querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.del;
+      if (!confirm(t("delete_char_q", id))) return;
+      await fetch(`/api/characters/${id}`, { method: 'DELETE' });
+      delete charactersData[id];
+      renderCharacters();
+    };
+  });
+}
+
+async function saveCharacters() {
+  const r = await fetch('/api/characters', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(charactersData),
+  });
+  const data = await r.json();
+  alert(t("saved_n_chars", data.count));
+}
+
+//═════════════════════════════════════════════════════════════════════
+// utils
+//═════════════════════════════════════════════════════════════════════
+
+function log(msg, cls = '') {
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function fmtTime(s) {
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return `${m}m ${sec}s`;
+}
+
+function naturalCompare(a, b) {
+  // Splits by runs of digits and compares them numerically:
+  // page2.png < page10.png; chapter_01 < chapter_2 (since 1 < 2)
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+  );
+}
+
+// Initial render
+applyI18n();
+loadModels();
+restoreConfig();
+wireConfigPersistence();
+
+// ─── persisted config (lang/font/model) ─────────────────────────────────────
+
+function restoreConfig() {
+  // Language (translation target), font path — restore on load.
+  // Model is restored inside loadModels() once the list arrives.
+  const saved = JSON.parse(localStorage.getItem("config") || "{}");
+  if (saved.target_lang && hasOption("cfg-lang", saved.target_lang)) {
+    $('cfg-lang').value = saved.target_lang;
+  }
+  if (saved.font_path) {
+    $('cfg-font').value = saved.font_path;
+  }
+  if (saved.debug) {
+    $('cfg-debug').checked = !!saved.debug;
+  }
+  if (saved.llm_debug) {
+    $('cfg-llm-debug').checked = !!saved.llm_debug;
+  }
+  if (saved.fast_mode) {
+    $('cfg-fast-mode').checked = !!saved.fast_mode;
+  }
+}
+
+function saveConfig() {
+  const cfg = {
+    target_lang: $('cfg-lang').value,
+    font_path: $('cfg-font').value,
+    debug: $('cfg-debug').checked,
+    llm_debug: $('cfg-llm-debug').checked,
+    fast_mode: $('cfg-fast-mode').checked,
+    llm_model: $('cfg-model').value || "",
+  };
+  localStorage.setItem("config", JSON.stringify(cfg));
+}
+
+function wireConfigPersistence() {
+  // Persist any change to any config control
+  ['cfg-lang', 'cfg-font', 'cfg-debug', 'cfg-llm-debug', 'cfg-fast-mode', 'cfg-model'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener('change', saveConfig);
+    el.addEventListener('input', saveConfig);
+  });
+}
+
+function hasOption(selectId, value) {
+  const sel = $(selectId);
+  if (!sel) return false;
+  return Array.from(sel.options).some(o => o.value === value);
+}
+
+$('btn-export-zip').onclick = () => exportArchive('zip');
+$('btn-export-cbz').onclick = () => exportArchive('cbz');
+
+function exportArchive(fmt) {
+  if (!currentJobId) return;
+  // Anchor-based download: browser handles the file save dialog and
+  // sends Content-Disposition headers from server.
+  const url = `/api/job/${currentJobId}/export?fmt=${fmt}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';   // honors server-side Content-Disposition
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function loadModels() {
+  const sel = $('cfg-model');
+  try {
+    const r = await fetch('/api/models');
+    const data = await r.json();
+    sel.innerHTML = '';
+
+    // Backend error talking to Ollama
+    if (data.error) {
+      console.warn('Ollama error:', data.error);
+      log(`Ollama: ${data.error}`, 'warn');
+      const opt = document.createElement('option');
+      opt.textContent = t('cfg_model_none');
+      opt.disabled = true;
+      sel.appendChild(opt);
+      // Also expose a manual-input option so user can still proceed
+      addManualEntryOption(sel);
+      return;
+    }
+
+    const multimodal = data.models.filter(m => m.multimodal && !m.ocr);
+    const others = data.models.filter(m => !m.multimodal && !m.ocr);
+    const ocrs = data.models.filter(m => m.ocr);
+
+    if (!data.models.length) {
+      console.warn('Ollama has no models. Host:', data.ollama_host);
+      log(`No models in Ollama at ${data.ollama_host}. Run "ollama pull gemma3:27b"`, 'warn');
+      const opt = document.createElement('option');
+      opt.textContent = t('cfg_model_none');
+      opt.disabled = true;
+      sel.appendChild(opt);
+      addManualEntryOption(sel);
+      return;
+    }
+
+    console.log(`Loaded ${data.models.length} model(s) from ${data.ollama_host}`,
+                 'multimodal:', multimodal.map(m => m.name),
+                 'other:', others.map(m => m.name),
+                 'ocr:', ocrs.map(m => m.name));
+
+    const appendGroup = (label, list) => {
+      if (!list.length) return;
+      const group = document.createElement('optgroup');
+      group.label = label;
+      list.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.name;
+        opt.textContent = `${m.name}${m.size_gb ? ` (${m.size_gb} GB)` : ''}`;
+        if (m.name === data.default) opt.selected = true;
+        group.appendChild(opt);
+      });
+      sel.appendChild(group);
+    };
+
+    appendGroup(
+      LANG === 'ru' ? 'Мультимодальные' : 'Multimodal',
+      multimodal
+    );
+    appendGroup(
+      LANG === 'ru' ? 'Прочие (могут не поддерживать изображения)' : 'Other (may not support images)',
+      others
+    );
+    appendGroup(
+      LANG === 'ru' ? 'OCR (не подходят для перевода)' : 'OCR (not suitable for translation)',
+      ocrs
+    );
+    addManualEntryOption(sel);
+
+    // Restore saved model if present in the list
+    const saved = JSON.parse(localStorage.getItem("config") || "{}");
+    if (saved.llm_model && hasOption("cfg-model", saved.llm_model)) {
+      sel.value = saved.llm_model;
+    }
+  } catch (e) {
+    console.error('loadModels failed:', e);
+    sel.innerHTML = `<option disabled>${t('cfg_model_none')}</option>`;
+    addManualEntryOption(sel);
+  }
+}
+
+function addManualEntryOption(sel) {
+  // Lets the user type a model name manually if dropdown isn't enough
+  const sep = document.createElement('option');
+  sep.disabled = true; sep.textContent = '──────────';
+  sel.appendChild(sep);
+  const manual = document.createElement('option');
+  manual.value = '__manual__';
+  manual.textContent = LANG === 'ru' ? '✎ Ввести вручную...' : '✎ Enter manually...';
+  sel.appendChild(manual);
+
+  sel.onchange = () => {
+    if (sel.value === '__manual__') {
+      const name = prompt(LANG === 'ru' ? 'Введите имя модели Ollama:' : 'Enter Ollama model name:', '');
+      if (name) {
+        // Add the typed name as a new option and select it
+        const custom = document.createElement('option');
+        custom.value = name; custom.textContent = name + ' (custom)';
+        custom.selected = true;
+        sel.insertBefore(custom, sep);
+      } else {
+        sel.selectedIndex = 0;
+      }
+    }
+  };
+}
+</script>
+</body>
+</html>
