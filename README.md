@@ -9,7 +9,20 @@ Most automatic manga translators handle each speech bubble in isolation, so they
 
 Everything runs **locally** on your machine via [Ollama](https://ollama.com). No cloud API keys.
 
-![Screenshot placeholder — drop your screenshot here as docs/screenshot.png](docs/screenshot.png)
+## Example
+
+<table>
+<tr>
+<th width="50%">Original (Chinese)</th>
+<th width="50%">Kotoba → Russian</th>
+</tr>
+<tr>
+<td><img src="docs/sample_original.jpg" alt="Original page from Pepper&Carrot"></td>
+<td><img src="docs/sample_translated.png" alt="Translated by Kotoba"></td>
+</tr>
+</table>
+
+<sub>Sample artwork: *Pepper&Carrot* by [David Revoy](https://www.peppercarrot.com/), licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). Chinese localization by the Pepper&Carrot community.</sub>
 
 ## What makes it different
 
@@ -149,3 +162,10 @@ Kotoba stands on the shoulders of several excellent open-source projects:
 - [glm-ocr](https://ollama.com/) and [Gemma](https://ai.google.dev/gemma) for OCR/translation via Ollama
 - [Ollama](https://ollama.com) — local model serving
 - [transformers](https://github.com/huggingface/transformers) and [PyTorch](https://pytorch.org) for inference
+
+### Sample artwork
+
+The example page in this README is from the webcomic ***Pepper&Carrot*** by [**David Revoy**](https://www.peppercarrot.com/), used under the [Creative Commons Attribution 4.0 International License (CC-BY 4.0)](https://creativecommons.org/licenses/by/4.0/). The Chinese localization shown is by the Pepper&Carrot community.
+
+Pepper&Carrot is a free-libre webcomic — please support its author at https://www.peppercarrot.com/.
+
