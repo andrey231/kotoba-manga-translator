@@ -313,6 +313,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     "gender": b.get("gender", "unknown"),
                     "font_path": b.get("font_path"),    # per-bubble override (None = use default)
                     "font_size": b.get("font_size"),    # per-bubble override (None = auto-fit)
+                    "text_color": list(b["_text_color"]) if b.get("_text_color") else None,
+                    "class": b.get("class", "text_bubble"),
                 }
                 for i, b in enumerate(bubbles)
             ],
@@ -436,6 +438,11 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
                 b["font_path"] = u["font_path"] if u["font_path"] else None
             if "font_size" in u:
                 b["font_size"] = u["font_size"] if u["font_size"] else None
+            if "text_color" in u:
+                # Hex "#rrggbb" → (r, g, b) tuple
+                hex_color = (u["text_color"] or "").lstrip("#")
+                if len(hex_color) == 6:
+                    b["text_color"] = [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
 
     # Перерисовываем страницу
     upload_dir = UPLOADS_DIR / job_id
@@ -462,6 +469,8 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
             # Per-bubble overrides — могут быть None
             "font_path": b.get("font_path"),
             "font_size": b.get("font_size"),
+            "_text_color": tuple(b["text_color"]) if b.get("text_color") else None,
+            "class": b.get("class", "text_bubble"),
         }
         for b in page["bubbles"]
     ]

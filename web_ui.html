@@ -162,17 +162,30 @@
 
   /* Editor */
   .editor-layout {
-    display: grid; grid-template-columns: 2fr 1fr; gap: 24px;
-    height: calc(100vh - 180px);
+    display: grid; grid-template-columns: 1fr 300px; gap: 24px;
+    align-items: start;
+  }
+  .editor-main {
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .editor-col-label {
+    font-size: 11px; color: #666; text-align: center;
+    padding: 0 0 4px; letter-spacing: 0.06em; text-transform: uppercase;
+    flex-shrink: 0;
   }
   .editor-image {
-    background: #222; border-radius: 8px; overflow: auto;
+    background: #222; border-radius: 8px; overflow: hidden;
     position: relative;
   }
   .editor-image img { width: 100%; display: block; }
+  .editor-original-strip {
+    background: #222; border-radius: 8px;
+  }
+  .editor-original-strip img { width: 100%; display: block; }
   .editor-side {
     background: #222; border-radius: 8px;
     padding: 16px; overflow-y: auto;
+    position: sticky; top: 10px; max-height: calc(100vh - 120px);
   }
   .bubble-item {
     background: #1a1a1a; border-radius: 6px;
@@ -454,8 +467,15 @@
     </div>
   </div>
   <div class="editor-layout">
-    <div class="editor-image" id="editor-image">
-      <div class="empty" data-i18n="editor_empty">Load or select a job to edit</div>
+    <div class="editor-main">
+      <div class="editor-col-label" data-i18n="editor_label_translated">Translated</div>
+      <div class="editor-image" id="editor-image">
+        <div class="empty" data-i18n="editor_empty">Load or select a job to edit</div>
+      </div>
+      <div class="editor-col-label" data-i18n="editor_label_original">Original</div>
+      <div class="editor-original-strip" id="editor-original">
+        <div class="empty" data-i18n="editor_empty">Load or select a job to edit</div>
+      </div>
     </div>
     <div class="editor-side" id="editor-side">
       <div class="empty" data-i18n="editor_side_empty">Bubbles will appear here</div>
@@ -518,8 +538,12 @@ const I18N = {
     editor_rerender:  "💾 Save and re-render",
     editor_font:      "Font:",
     editor_size:      "Size:",
+    editor_color:     "Color:",
+    editor_delete_bubble: "Clear translation (show original)",
     editor_empty:     "Load or select a job to edit",
     editor_side_empty: "Bubbles will appear here",
+    editor_label_original:   "Original",
+    editor_label_translated: "Translated",
     characters_title: "Character archive",
     characters_reload: "Reload",
     characters_save:  "💾 Save",
@@ -599,8 +623,12 @@ const I18N = {
     editor_rerender:  "💾 Сохранить и перерисовать",
     editor_font:      "Шрифт:",
     editor_size:      "Размер:",
+    editor_color:     "Цвет:",
+    editor_delete_bubble: "Убрать перевод (показать оригинал)",
     editor_empty:     "Загрузите или выберите джоб для редактирования",
     editor_side_empty: "Баблы появятся здесь",
+    editor_label_original:   "Оригинал",
+    editor_label_translated: "Перевод",
     characters_title: "Архив персонажей",
     characters_reload: "Обновить",
     characters_save:  "💾 Сохранить",
@@ -963,6 +991,8 @@ function openEditPage(pageNum) {
   if (!page) return;
   currentEditPage = page;
   $('editor-page-select').value = pageNum;
+  const origUrl = `/files/uploads/${currentJobId}/${page.filename}`;
+  $('editor-original').innerHTML = `<img src="${origUrl}" alt="Original">`;
   $('editor-image').innerHTML =
     `<img src="${page.url}?t=${Date.now()}" alt="Page">`;
 
@@ -977,6 +1007,13 @@ function openEditPage(pageNum) {
     item.className = 'bubble-item';
     const fontVal = b.font_path || '';
     const sizeVal = b.font_size != null && b.font_size !== '' ? b.font_size : '';
+    // Convert stored color [r,g,b] or "#rrggbb" to hex for color input
+    let colorVal = '#000000';
+    if (Array.isArray(b.text_color)) {
+      colorVal = '#' + b.text_color.map(c => c.toString(16).padStart(2, '0')).join('');
+    } else if (typeof b.text_color === 'string' && b.text_color.startsWith('#')) {
+      colorVal = b.text_color;
+    }
     item.innerHTML = `
       <div class="num">#${b.idx} ${b.speaker !== 'unknown' ? '— ' + escapeHtml(b.speaker) : ''}</div>
       <div class="speaker">${b.x},${b.y} • ${b.w}×${b.h} • ${b.gender}</div>
@@ -989,9 +1026,23 @@ function openEditPage(pageNum) {
         <label data-i18n="editor_size">Size:</label>
         <input type="number" class="bubble-size" data-idx="${b.idx}" data-field="font_size"
                placeholder="auto" min="6" max="120" value="${sizeVal}">
+        <label data-i18n="editor_color">Color:</label>
+        <input type="color" data-idx="${b.idx}" data-field="text_color" value="${colorVal}"
+               title="${t('editor_color')}">
+        <button type="button" class="btn-danger" style="padding:3px 8px; font-size:11px;"
+                data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
       </div>
     `;
     side.appendChild(item);
+  });
+
+  // Кнопки удаления — очищают перевод
+  side.querySelectorAll('[data-delete-idx]').forEach(btn => {
+    btn.onclick = () => {
+      const idx = btn.dataset.deleteIdx;
+      const ta = side.querySelector(`textarea[data-idx="${idx}"]`);
+      if (ta) ta.value = '';
+    };
   });
   applyI18n();
 }

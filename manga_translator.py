@@ -40,7 +40,6 @@ warnings.filterwarnings("ignore")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 CROPS_DIR = "crops"
-RESULTS_DIR = "results"
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
 BUBBLE_MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
@@ -61,8 +60,17 @@ LAMA_REPOS = [
 
 DEFAULT_FONT = "arial.ttf"   # переопределяется через process_directory(font_path=...)
 
+# Паттерны мета-рассуждений модели вместо перевода.
+# Используются в _translate_chunk и _translate_persistent для отбраковки ответов.
+_META_MARKERS: tuple[str, ...] = (
+    "depending on", "it could be", "it can be translated",
+    "note:", "please note", "keep in mind",
+    "в зависимости", "можно перевести", "можно оставить",
+    "это можно", "стоит отметить", "следует отметить",
+    "примечание:", "обратите внимание",
+)
+
 os.makedirs(CROPS_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 # ─── инициализация моделей ────────────────────────────────────────────────────
@@ -298,10 +306,13 @@ def image_to_base64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 def clean_text(text: str) -> str:
-    """Убирает markdown-артефакты и лишние пробелы."""
+    """Убирает markdown-артефакты и лишние пробелы, сохраняя переносы строк."""
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     text = re.sub(r"`+", "", text)
-    text = re.sub(r"\s+", " ", text)
+    # Схлопываем пробелы/табы внутри строки, но НЕ переносы строк
+    text = re.sub(r"[^\S\n]+", " ", text)
+    # Убираем лишние пустые строки (3+ подряд → 2)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 # Глобальный флаг подробного логирования всех LLM-запросов.
@@ -523,13 +534,21 @@ def detect_character_intro_page(image_path: str) -> bool:
     """
     prompt = """Look at this manga page.
 
-Is this a CHARACTER INTRODUCTION page — a gallery of character portraits where
-each character is shown alongside their name and a brief description (like a
-cast page, character roster, or "dramatis personae")?
+Is this a CHARACTER INTRODUCTION page — a structured VISUAL ROSTER where multiple
+individual character PORTRAIT ILLUSTRATIONS are arranged in a grid or list, each
+portrait labeled with the character's name?
 
-This is NOT an introduction page if it shows characters in a normal scene,
-talking, or doing actions. It IS an introduction page only if the layout is
-clearly a roster/gallery with labels.
+Answer YES only if ALL of these are true:
+- There are multiple separate character portrait drawings on the page
+- Each portrait has the character's name printed next to or below it
+- The layout is clearly a roster/lineup/gallery (not a story scene)
+
+Answer NO if the page shows:
+- Characters in a normal scene, talking, or doing actions
+- A single large illustration (even with text)
+- A credits, staff, or cast TEXT listing (names in columns without portrait art)
+- An announcement or teaser page ("Season 3 Coming Soon", etc.)
+- Primarily text with little or no character art
 
 Answer with EXACTLY one word: YES or NO."""
 
@@ -846,7 +865,7 @@ def attribute_bubbles(image_path: str, bubbles: list[dict],
     print("  Attributing speech bubbles...")
     bubble_list = "\n".join(
         f'[{i+1}] pos=({b["x"]},{b["y"]}) size={b["width"]}x{b["height"]} '
-        f'text="{b.get("text", "")}"'
+        f'text="{b.get("text", "").replace(chr(10), " ")}"'
         for i, b in enumerate(bubbles)
     )
 
@@ -1030,27 +1049,34 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
     dyn_predict = 6000
 
     n = total   # включая padding, чтобы модель видела согласованное число
-    prompt = f"""You are translating manga dialogue to {target_lang}.
+    prompt = f"""You are translating manga content to {target_lang}.
 
 {manga_ctx.to_prompt()}
 
 PAGE CONTEXT:
 {page_context}
 
-You will receive a JSON array of {n} speech bubbles. For EACH bubble,
-produce a natural translation matching the speaker's personality and gender.
-Filter OCR artifacts (stray punctuation, broken letters). Preserve emotion
-and register. For sound effects (PANT, HUFF, TCH, AHH, EEK, etc.) produce
-a natural-sounding equivalent in {target_lang}.
+You will receive a JSON array of {n} text bubbles. For EACH bubble translate
+the ENTIRE text content:
+- Dialogue: match the speaker's personality and gender, preserve emotion and register.
+- Sound effects (PANT, HUFF, TCH, AHH, EEK, etc.): produce a natural equivalent in {target_lang}.
+- Announcements, credits, cast/staff lists, copyright notices: translate ALL lines
+  faithfully — do NOT summarize, omit, or shorten. Keep proper names (people,
+  companies, characters) unchanged. Only translate structural labels
+  (STAFF→ПЕРСОНАЛ, CAST→В РОЛЯХ, etc.) if translating to {target_lang}.
+- Only filter genuine OCR noise: isolated stray characters with no meaning
+  (e.g. a lone "·" or "|"). Never discard recognizable words or names.
 
 INPUT (JSON array of {n} bubbles):
 {inputs_json}
 
 CRITICAL OUTPUT RULES:
 1. Return EXACTLY {n} translations, one per input bubble, in the SAME order.
-2. Output ONLY a JSON array, no prose before/after, no markdown fences.
+2. Output ONLY a JSON array, no prose before/after, no markdown fences, no comments.
 3. Each item must have "id" (matching input id) and "translation" (string).
-4. Even for sound effects or single-word lines, produce a translation —
+4. The "translation" field must contain ONLY the translated text — no explanations,
+   no notes about your approach, no commentary.
+5. Even for sound effects or single-word lines, produce a translation —
    never return empty string or skip an item.
 
 OUTPUT (JSON array of {n} items):"""
@@ -1112,7 +1138,11 @@ OUTPUT (JSON array of {n} items):"""
             if isinstance(r, dict):
                 translation = r.get("translation", "")
         if translation and translation.strip():
-            b["translation"] = translation.strip()
+            t = translation.strip()
+            if any(t.lower().startswith(m) for m in _META_MARKERS):
+                missing_indices.append(global_idx)  # отправляем в persistent fallback
+            else:
+                b["translation"] = t
         else:
             missing_indices.append(global_idx)
 
@@ -1145,19 +1175,23 @@ def _translate_persistent(bubble: dict, page_context: str,
     strategies = [
         # 1. С минимальным контекстом — speaker + текст
         ("ctx-speaker", lambda: (
-            f"Translate this manga line to {target_lang}.\n"
+            f"Translate this manga text to {target_lang}.\n"
             f"Speaker: {speaker} ({gender_h}).\n"
             f"Source: {text}\n\n"
-            f"Output only the translation. One line. No quotes."
+            f"Rules: keep proper nouns, titles, and names unchanged. "
+            f"Output ONLY the translated text. No quotes. No explanations."
         )),
         # 2. UI-style — как пользователь написал бы в Ollama UI
         ("ui-style", lambda: (
-            f"Переведи на русский: {text}" if target_lang.lower() == "russian"
-            else f"Translate to {target_lang}: {text}"
+            f"Переведи на русский (только перевод, без пояснений): {text}"
+            if target_lang.lower() == "russian"
+            else f"Translate to {target_lang} (output translation only): {text}"
         )),
         # 3. Совсем минимально — последний шанс
         ("raw-imperative", lambda: (
-            f"{target_lang}: {text}"
+            f"Переведи строку на {target_lang}, только результат: {text}"
+            if target_lang.lower() == "russian"
+            else f"{target_lang} translation only: {text}"
         )),
     ]
 
@@ -1165,7 +1199,7 @@ def _translate_persistent(bubble: dict, page_context: str,
         "i cannot", "i can't", "cannot translate", "i am unable",
         "sorry,", "as an ai", "no translation",
         "не могу", "невозможно", "к сожалению",
-    )
+    ) + _META_MARKERS
 
     for attempt, (strat_label, build_prompt) in enumerate(strategies, start=1):
         prompt = build_prompt()
@@ -1190,7 +1224,10 @@ def _translate_persistent(bubble: dict, page_context: str,
         if any(m in cleaned.lower() for m in refusal_markers):
             print(f"     [persistent {attempt} {strat_label}] refusal: '{cleaned[:50]}'")
             continue
-
+        # Если цель — кириллический язык, но в ответе вообще нет кириллицы —
+        # это мета-объяснение на английском вместо перевода.
+        # Проверяем именно ОТСУТСТВИЕ кириллицы (< 5 символов), а не избыток латиницы:
+        # перевод с именами собственными может содержать много латинских символов
         print(f"     [persistent ok @ attempt {attempt} / {strat_label}]")
         return cleaned
 
@@ -1201,11 +1238,13 @@ def _translate_persistent(bubble: dict, page_context: str,
 def _clean_translation(raw: str) -> str:
     """
     Чистит ответ модели от типичного мусора:
-    - markdown-фенсы
+    - markdown-фенсы и markdown-форматирование (**bold**, *italic*)
     - окружающие кавычки
-    - префиксы "Translation:" / "Перевод:" / и т.п.
-    - служебные суффиксы вроде "(translated)"
-    Возвращает первую непустую строку.
+    - префиксы "Translation:" / "Перевод:" / "Вот перевод:" и т.п.
+    Если первая строка — мета-комментарий (Вот перевод..., Here is...), она
+    отбрасывается, а весь остаток сохраняется (нужно для многострочных
+    кредит-листов). Для однострочных диалогов возвращается первая строка
+    оставшегося текста — т.к. модель обычно добавляет пояснения после.
     """
     result = raw.strip()
     if result.startswith("```"):
@@ -1213,20 +1252,39 @@ def _clean_translation(raw: str) -> str:
         result = result.rstrip("`").strip()
     result = result.strip('"').strip("'").strip()
 
-    # Уберём типичные префиксы (в начале строки)
+    # Уберём типичные label-префиксы в начале
     prefixes = (
         "translation:", "перевод:", "russian:", "english:",
         "answer:", "result:", "ответ:",
     )
     for prefix in prefixes:
         if result.lower().startswith(prefix):
-            result = result[len(prefix):].strip()
-            result = result.strip('"').strip("'").strip()
+            result = result[len(prefix):].strip().strip('"').strip("'").strip()
             break
 
-    # Берём первую непустую строку — модель часто добавляет пояснения после
-    first_line = next((ln.strip() for ln in result.splitlines() if ln.strip()), "")
-    # Снимаем окружающие кавычки ещё раз (после строкового split)
+    lines = [ln.strip() for ln in result.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    # Если первая строка — мета-комментарий, пропускаем её
+    _meta_intro = ("вот ", "here is", "below is", "please note", "note:")
+    first_low = lines[0].lower()
+    if (any(first_low.startswith(m) for m in _meta_intro)
+            or any(first_low.startswith(m) for m in _META_MARKERS)):
+        lines = lines[1:]
+        if not lines:
+            return ""
+
+    # Убираем markdown-форматирование (**bold**, *italic*, ***bold-italic***)
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\*{1,3}(.+?)\*{1,3}", r"\1", cleaned)
+
+    # Для многострочного контента (кредиты, анонсы) возвращаем весь текст.
+    # Для однострочного — берём первую непустую строку (не захватываем пояснения после).
+    stripped_lines = [ln for ln in cleaned.splitlines() if ln.strip()]
+    if len(stripped_lines) > 1:
+        return cleaned.strip()
+    first_line = stripped_lines[0] if stripped_lines else ""
     return first_line.strip('"').strip("'").strip()
 
 
@@ -1274,7 +1332,9 @@ def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
     cv2.imwrite(crop_path, processed)
     raw = ollama(
         "glm-ocr:latest",
-        "Read and return ONLY the text in this manga speech bubble. No explanation.",
+        ("Read and return the text in this image. "
+         "Preserve the original line breaks and layout structure. "
+         "Output only the text, no explanation."),
         crop_path,
         timeout=60,
     )
@@ -1338,6 +1398,76 @@ def detect_bubbles(image_pil: Image.Image, threshold: float = 0.5) -> list[dict]
         })
     return bubbles
 
+
+def _clip_overlapping_boxes(bubbles: list[dict], min_area: int = 400) -> list[dict]:
+    """Обрезает перекрывающиеся баблы так, чтобы они не пересекались.
+
+    Приоритет: меньший бабл сохраняется целиком, больший обрезается вокруг него.
+    При одинаковом размере — приоритет сверху вниз, затем слева направо.
+    Баблы, у которых после обрезки площадь < min_area, удаляются.
+    """
+    if len(bubbles) <= 1:
+        return bubbles
+
+    # Меньшая площадь = выше приоритет; ничья → верхний левее
+    order = sorted(
+        range(len(bubbles)),
+        key=lambda i: (bubbles[i]["width"] * bubbles[i]["height"],
+                       bubbles[i]["y"], bubbles[i]["x"]),
+    )
+
+    result: list[dict] = []
+    dropped = 0
+
+    for idx in order:
+        b = dict(bubbles[idx])
+        bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
+
+        for c in result:
+            cx, cy, cw, ch = c["x"], c["y"], c["width"], c["height"]
+            ix1 = max(bx, cx); iy1 = max(by, cy)
+            ix2 = min(bx + bw, cx + cw); iy2 = min(by + bh, cy + ch)
+            if ix1 >= ix2 or iy1 >= iy2:
+                continue  # нет пересечения
+
+            # 4 варианта обрезки — выбираем с наибольшей оставшейся площадью
+            options: list[tuple[int, int, int, int]] = []
+            nw = cx - bx
+            if nw > 0: options.append((bx, by, nw, bh))
+            nx = cx + cw; nw2 = (bx + bw) - nx
+            if nw2 > 0: options.append((nx, by, nw2, bh))
+            nh = cy - by
+            if nh > 0: options.append((bx, by, bw, nh))
+            ny = cy + ch; nh2 = (by + bh) - ny
+            if nh2 > 0: options.append((bx, ny, bw, nh2))
+
+            if options:
+                bx, by, bw, bh = max(options, key=lambda r: r[2] * r[3])
+            else:
+                bw = bh = 0
+                break
+
+        if bw * bh >= min_area:
+            b["x"], b["y"], b["width"], b["height"] = bx, by, bw, bh
+            result.append(b)
+        else:
+            dropped += 1
+
+    if dropped:
+        print(f"  [clip] {dropped} bubble(s) dropped (too small after clipping)")
+    clipped_count = sum(
+        1 for orig, res in zip(
+            sorted(bubbles, key=lambda b: b["width"] * b["height"]),
+            result,
+        )
+        if orig["x"] != res["x"] or orig["y"] != res["y"]
+           or orig["width"] != res["width"] or orig["height"] != res["height"]
+    )
+    if clipped_count:
+        print(f"  [clip] {clipped_count} bubble(s) clipped to avoid overlap")
+    return result
+
+
 # ─── анализ оригинального текста (цвет, ориентация) ──────────────────────────
 
 def _binarize_text_mask(crop_gray: np.ndarray) -> np.ndarray:
@@ -1357,40 +1487,70 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
                       default: tuple = (0, 0, 0)) -> tuple:
     """
     Определяет цвет текста в бабле.
-    Берём пиксели где маска текста активна и считаем медианный цвет.
-    Медиана устойчивее к выбросам (антиалиасинг по краям букв).
+
+    text_free (логотипы, вольный текст на постере) — HSV-насыщенность:
+      Оцу на grayscale видит только тёмный контур букв, пропуская цветную
+      заливку. Для логотипов берём медиану насыщенных пикселей.
+    text_bubble (речевые пузыри) — Оцу: белый фон + чёрный текст, точно.
     """
     x, y, w, h = bubble["x"], bubble["y"], bubble["width"], bubble["height"]
     crop = img_cv[y:y+h, x:x+w]
     if crop.size == 0:
         return default
 
+    # Маленький text_free (логотип, заголовок) → HSV: цветная заливка букв
+    # даёт насыщенные пиксели, Оцу их пропускает (видит только тёмный контур).
+    # Большой text_free (список, блок текста) → Оцу: иначе HSV захватит
+    # цветной фоновый арт вместо самого (чёрного) текста.
+    bubble_area = bubble.get("width", 0) * bubble.get("height", 0)
+    if bubble.get("class") == "text_free" and bubble_area < _LARGE_BUBBLE_PX:
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        sat_mask = (hsv[:, :, 1] > 100) & (hsv[:, :, 2] > 80)
+        sat_pixels = crop[sat_mask]
+        if len(sat_pixels) >= 30:
+            b, g, r = np.median(sat_pixels, axis=0).astype(int)
+            r, g, b = int(r), int(g), int(b)
+            if max(abs(r - g), abs(g - b), abs(r - b)) > 40:
+                return (r, g, b)
+
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     mask = _binarize_text_mask(gray)
-
     text_pixels = crop[mask > 0]
-    if len(text_pixels) < 10:    # текста толком не нашлось
+    if len(text_pixels) < 10:
         return default
-
-    # Медиана по каждому каналу (BGR → возвращаем как RGB для PIL)
     b, g, r = np.median(text_pixels, axis=0).astype(int)
+    # Sanity check: if detected text color is too close to background color,
+    # Otsu split background noise instead of text — fall back to default.
+    bg_pixels = crop[mask == 0]
+    if len(bg_pixels) > 0:
+        bb, bg_g, br = np.median(bg_pixels, axis=0).astype(int)
+        if max(abs(r - br), abs(g - bg_g), abs(b - bb)) < 40:
+            return default
     return (int(r), int(g), int(b))
 
 
 # ─── инпейтинг ────────────────────────────────────────────────────────────────
 
-def build_inpaint_mask(image_shape: tuple, bubbles: list[dict],
+_LARGE_BUBBLE_PX = 80_000  # порог (px²) — выше него используем глифовую маску
+
+
+def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict],
                         shrink: int = 1) -> np.ndarray:
     """
-    Строит бинарную маску для инпейтинга: 255 = заменяемая область, 0 = сохранить.
-    Маска СТРОГО внутри bbox каждого бабла (без расширения наружу) — иначе
-    SD начинает «творить» по соседству и оставляет артефакты.
+    Строит маску для инпейтинга: 255 = стираем, 0 = оставляем.
 
-    shrink — на сколько пикселей сжать маску ВНУТРЬ от границы bbox.
-    Небольшое сжатие защищает контур самого бабла от перерисовки.
+    Стратегия по размеру бабла:
+    - Маленький (< _LARGE_BUBBLE_PX): полный bbox — LaMa справляется с небольшой
+      областью даже для стилизованных логотипов с градиентом.
+    - Большой (>= _LARGE_BUBBLE_PX): глифовая маска — стираем только пиксели текста,
+      оставляя фоновый арт нетронутым (большой bbox LaMa восстанавливает плохо).
     """
-    h, w = image_shape[:2]
+    h, w = img_cv.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
+    img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    connect_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    dilate_k  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
     for b in bubbles:
         if not b.get("translation"):
             continue
@@ -1399,8 +1559,29 @@ def build_inpaint_mask(image_shape: tuple, bubbles: list[dict],
         y0 = max(0, y + shrink)
         x1 = min(w, x + bw - shrink)
         y1 = min(h, y + bh - shrink)
-        if x1 > x0 and y1 > y0:
+        if x1 <= x0 or y1 <= y0:
+            continue
+
+        # Маленький бабл — полный bbox (надёжнее для логотипов/мелких областей)
+        if bw * bh < _LARGE_BUBBLE_PX:
             mask[y0:y1, x0:x1] = 255
+            continue
+
+        # Большой бабл — глифовая маска чтобы не трогать фоновый арт
+        crop_gray = img_gray[y0:y1, x0:x1]
+        glyph = _binarize_text_mask(crop_gray)
+
+        if np.count_nonzero(glyph) > 0.75 * glyph.size:
+            # Бинаризация не справилась (шумный фон) — полный bbox
+            mask[y0:y1, x0:x1] = 255
+        else:
+            glyph = cv2.dilate(glyph, connect_k)
+            contours, _ = cv2.findContours(glyph, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(glyph, contours, -1, 255, cv2.FILLED)
+            glyph = cv2.dilate(glyph, dilate_k)
+            mask[y0:y1, x0:x1] = np.maximum(mask[y0:y1, x0:x1], glyph)
+
     return mask
 
 
@@ -1438,7 +1619,7 @@ def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
 
     Fallback: cv2.inpaint при ошибке LaMa или если модель не загрузилась.
     """
-    mask_np = build_inpaint_mask(img_cv.shape, bubbles)
+    mask_np = build_inpaint_mask(img_cv, bubbles)
 
     if not mask_np.any():
         return img_cv.copy()    # инпейтить нечего
@@ -1653,7 +1834,30 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
         Перебирает стратегии разбиения для данного размера. Лучшая по score.
         Если allow_hyphenation=False — отказывается от разбиений где пришлось
         бы переносить слово с дефисом.
+
+        Если text содержит \\n — каждый перенос трактуется как принудительный
+        разрыв строки (параграф). Внутри параграфа делается word-wrap по ширине.
+        В этом случае scoring не применяется — структура текста фиксирована.
         """
+        paragraphs = text.split("\n")
+
+        if len(paragraphs) > 1:
+            # Текст с принудительными переносами — чтим структуру
+            all_lines: list[str] = []
+            for para in paragraphs:
+                para_words = para.split()
+                if not para_words:
+                    all_lines.append("")   # пустая строка = визуальный разрыв
+                    continue
+                wrapped = wrap_greedy(para_words, font,
+                                      allow_hyphenation=allow_hyphenation)
+                if wrapped is None:
+                    return None  # слово не вмещается — пробуем шрифт поменьше
+                all_lines.extend(wrapped)
+            m = measure(all_lines, font)
+            return (all_lines, *m) if m is not None else None
+
+        # Нет принудительных переносов — оригинальная логика
         words = text.split() or [text]
         candidates: list[tuple[list[str], int, int, int]] = []
 
@@ -1711,6 +1915,44 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
     # Fallback: минимальный размер с обрезкой
     font = try_load_font(5) or ImageFont.load_default()
     return font, [text[:20]], [8], 2
+
+
+def _effective_box(bx: int, by: int, bw: int, bh: int,
+                   smaller_bubbles: list[dict]) -> tuple[int, int, int, int]:
+    """
+    Возвращает (x, y, w, h) — наибольший прямоугольник внутри (bx, by, bw, bh),
+    не пересекающийся с bbox'ами маленьких баблов.
+    Для каждого пересечения выбирается один из 4 разрезов (лево/право/верх/низ)
+    с максимальной оставшейся площадью. Это гарантирует что текст большого бабла
+    не заходит в зону маленького, не выходя за рамки исходного bbox.
+    """
+    ex, ey, ew, eh = bx, by, bw, bh
+    for ob in smaller_bubbles:
+        ox, oy, ow, oh = ob["x"], ob["y"], ob["width"], ob["height"]
+        ix1 = max(ex, ox)
+        iy1 = max(ey, oy)
+        ix2 = min(ex + ew, ox + ow)
+        iy2 = min(ey + eh, oy + oh)
+        if ix1 >= ix2 or iy1 >= iy2:
+            continue  # нет пересечения
+        options: list[tuple[int, int, int, int]] = []
+        nw = ox - ex
+        if nw > 0:
+            options.append((ex, ey, nw, eh))          # обрезать справа
+        nx = ox + ow
+        nw2 = (ex + ew) - nx
+        if nw2 > 0:
+            options.append((nx, ey, nw2, eh))          # обрезать слева
+        nh = oy - ey
+        if nh > 0:
+            options.append((ex, ey, ew, nh))           # обрезать снизу
+        ny = oy + oh
+        nh2 = (ey + eh) - ny
+        if nh2 > 0:
+            options.append((ex, ny, ew, nh2))          # обрезать сверху
+        if options:
+            ex, ey, ew, eh = max(options, key=lambda r: r[2] * r[3])
+    return ex, ey, ew, eh
 
 
 def _render_text_block(text: str, box_w: int, box_h: int,
@@ -1776,31 +2018,40 @@ def _fit_at_exact_size(draw, text: str, box_w: int, box_h: int,
     def w_of(s):
         return draw.textbbox((0, 0), s, font=font)[2]
 
-    words = text.split() or [text]
-    lines = []
-    line = ""
-    for word in words:
-        test = (line + " " + word).strip()
-        if w_of(test) <= usable_w:
-            line = test
-        else:
-            if line:
-                lines.append(line)
-            # Если слово даже само не помещается — режем посимвольно с дефисом
-            if w_of(word) > usable_w:
-                cur = ""
-                for ch in word:
-                    if w_of(cur + ch + "-") <= usable_w:
-                        cur += ch
-                    else:
-                        if cur:
-                            lines.append(cur + "-")
-                        cur = ch
-                line = cur
+    def _wrap_para(para_words: list[str]) -> list[str]:
+        """Жадный word-wrap одного параграфа с дефисным переносом длинных слов."""
+        result: list[str] = []
+        cur = ""
+        for word in para_words:
+            test = (cur + " " + word).strip()
+            if w_of(test) <= usable_w:
+                cur = test
             else:
-                line = word
-    if line:
-        lines.append(line)
+                if cur:
+                    result.append(cur)
+                if w_of(word) > usable_w:
+                    buf = ""
+                    for ch in word:
+                        if w_of(buf + ch + "-") <= usable_w:
+                            buf += ch
+                        else:
+                            if buf:
+                                result.append(buf + "-")
+                            buf = ch
+                    cur = buf
+                else:
+                    cur = word
+        if cur:
+            result.append(cur)
+        return result
+
+    lines: list[str] = []
+    for para in text.split("\n"):
+        para_words = para.split()
+        if not para_words:
+            lines.append("")   # пустая строка = разрыв параграфа
+        else:
+            lines.extend(_wrap_para(para_words))
 
     # Полная высота строки через метрику шрифта (ascent + descent).
     # Одинаковая для всех строк — гарантирует что descender не выпадет.
@@ -1823,28 +2074,44 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
     """
     # 1. Определяем цвет текста ДО того как сотрём оригинал
     for b in bubbles:
-        if b.get("translation"):
+        if b.get("translation") and b.get("_text_color") is None:
             b["_text_color"] = detect_text_color(img_cv, b)
 
     # 2. Инпейнтим оригинальный текст
     print("  Inpainting original text (LaMa)...")
     inpainted = inpaint_page(img_cv, bubbles)
 
-    # 3. Рендерим переводы поверх инпейтнутой страницы
+    # 3. Рендерим переводы поверх инпейтнутой страницы.
+    # Большие ТОJТЛы рисуем первыми — маленькие всегда окажутся поверх,
+    # что устраняет перекрытие текста когда bbox'ы пересекаются.
     pil = Image.fromarray(cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
-    for b in bubbles:
+    render_order = sorted(
+        bubbles,
+        key=lambda b: b.get("width", 0) * b.get("height", 0),
+        reverse=True,
+    )
+    for i, b in enumerate(render_order):
         translation = b.get("translation", "")
         if not translation:
             continue
-        x, y, w, h = b["x"], b["y"], b["width"], b["height"]
+        bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
         color = b.get("_text_color", (0, 0, 0))
+
+        # Маленькие баблы (идут после в render_order) «занимают» свои области.
+        # Обрезаем рабочую область текущего бабла, чтобы не рисовать поверх них.
+        smaller = [s for s in render_order[i + 1:] if s.get("translation")]
+        ex, ey, ew, eh = _effective_box(bx, by, bw, bh, smaller)
+
+        if ew < 20 or eh < 20:
+            continue
+
         block = _render_text_block(
-            translation, w, h, color,
+            translation, ew, eh, color,
             font_path=b.get("font_path"),
             font_size_override=b.get("font_size"),
         )
-        pil.paste(block, (x, y), block)
+        pil.paste(block, (ex, ey), block)
 
     # 4. Debug-оверлей рисуем поверх — рамки и номера
     if debug:
@@ -1922,6 +2189,7 @@ def process_page(image_path: str, page_idx: int,
 
     # 1. Детекция и сортировка баблов (PIL уже в памяти — файл не перечитывается)
     bubbles = detect_bubbles(image_pil, threshold=0.5)
+    bubbles = _clip_overlapping_boxes(bubbles)
     text_bubbles = sorted(
         [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
         key=reading_order,
@@ -1944,13 +2212,15 @@ def process_page(image_path: str, page_idx: int,
             characters_context = extract_character_intros(image_path, archive, page_idx)
             print(characters_context)
 
-            # На галереях нечего переводить, но обновим сюжет и сохраним
-            # картинку без изменений
-            manga_ctx.update("Character introduction page.")
-            cv2.imwrite(output_path, img_cv)
-            print(f"\nSaved (unchanged): {output_path}")
-            print(f"  ⓘ character introduction page — no translation needed")
-            return text_bubbles
+            if characters_context != "CHARACTERS ON THIS PAGE: unknown":
+                # Успешно распознана галерея — сохраняем без перевода
+                manga_ctx.update("Character introduction page.")
+                cv2.imwrite(output_path, img_cv)
+                print(f"\nSaved (unchanged): {output_path}")
+                print(f"  ⓘ character introduction page — no translation needed")
+                return text_bubbles
+            else:
+                print("  [intro detect] extraction failed → treating as regular page")
 
     # 2. OCR
     print("\n── OCR ──")
@@ -2052,7 +2322,7 @@ def format_duration(seconds: float) -> str:
     return f"{m}м {s}с"
 
 
-def process_directory(input_dir: str, output_dir: str = RESULTS_DIR,
+def process_directory(input_dir: str, output_dir: str = "results",
                       target_lang: str = "Russian",
                       font_path: str = "arial.ttf",
                       debug: bool = False,
@@ -2080,7 +2350,7 @@ def process_directory(input_dir: str, output_dir: str = RESULTS_DIR,
     # Проверяем шрифт. Если указан — используем его. Если нет — пробуем
     # типичные манга-friendly шрифты по очереди, отдавая предпочтение жирным.
     def _resolve_font(requested: str) -> str | None:
-        """Возвращает рабочий путь к шрифту или None."""
+        """Возвращает рабочий путьGТепеweТе к шрифту или None."""
         # 1. Сначала пробуем то что запросил пользователь
         try:
             ImageFont.truetype(requested, 12)
