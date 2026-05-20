@@ -9,7 +9,9 @@ Most automatic manga translators handle each speech bubble in isolation, so they
 
 Everything runs **locally** on your machine via [Ollama](https://ollama.com). No cloud API keys.
 
-## Example
+## Examples
+
+**Pepper&Carrot** — Chinese → English
 
 <table>
 <tr>
@@ -17,12 +19,33 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 <th width="50%">Kotoba → English</th>
 </tr>
 <tr>
-<td><img src="docs/sample_original.jpg" alt="Original page from Pepper&Carrot"></td>
-<td><img src="docs/sample_translated.png" alt="Translated by Kotoba"></td>
+<td><img src="docs/sample_1_original.jpg" alt="Original page from Pepper&Carrot (Chinese)"></td>
+<td><img src="docs/sample_1_translated.png" alt="Translated to English by Kotoba"></td>
 </tr>
 </table>
 
-<sub>Sample artwork: *Pepper&Carrot* by [David Revoy](https://www.peppercarrot.com/), licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). Chinese localization by the Pepper&Carrot community.</sub>
+<sub>*Pepper&Carrot* by [David Revoy](https://www.peppercarrot.com/), [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). Chinese localization by the Pepper&Carrot community.</sub>
+
+---
+
+**愛さずにはいられない (I Can't Help But Love You)** — Japanese → English
+
+<table>
+<tr>
+<th width="50%">Original (Japanese)</th>
+<th width="50%">Kotoba → English</th>
+</tr>
+<tr>
+<td><img src="docs/sample_2_original.jpg" alt="Original title page — AisazuNihaIrarenai"></td>
+<td><img src="docs/sample_2_translated.png" alt="Translated to English by Kotoba"></td>
+</tr>
+<tr>
+<td><img src="docs/sample_3_original.jpg" alt="Original manga page — AisazuNihaIrarenai"></td>
+<td><img src="docs/sample_3_translated.png" alt="Translated to English by Kotoba"></td>
+</tr>
+</table>
+
+<sub>*愛さずにはいられない* by よしまさこ. From the [Manga109](http://www.manga109.org/) dataset, used under the Manga109 research license for non-commercial purposes. © よしまさこ / 集英社.</sub>
 
 ## What makes it different
 
@@ -49,7 +72,7 @@ Page image
   ├─► Original text removal    (anime-big-lama inpainting)
   └─► Translated text render   (PIL — auto font size, smart wrapping)
 ```
-
+__
 A **Fast mode** toggle skips the page-analysis and attribution stages — useful for quick drafts when context isn't critical (saves ~30-60 seconds per page).
 
 ## Requirements
@@ -165,7 +188,7 @@ Kotoba stands on the shoulders of several excellent open-source projects:
 
 ### Sample artwork
 
-The example page in this README is from the webcomic ***Pepper&Carrot*** by [**David Revoy**](https://www.peppercarrot.com/), used under the [Creative Commons Attribution 4.0 International License (CC-BY 4.0)](https://creativecommons.org/licenses/by/4.0/). The Chinese localization shown is by the Pepper&Carrot community.
+**Pepper&Carrot** — The first example is from the webcomic ***Pepper&Carrot*** by [**David Revoy**](https://www.peppercarrot.com/), used under the [Creative Commons Attribution 4.0 International License (CC-BY 4.0)](https://creativecommons.org/licenses/by/4.0/). The Chinese localization is by the Pepper&Carrot community. Pepper&Carrot is a free-libre webcomic — please support its author at https://www.peppercarrot.com/.
 
-Pepper&Carrot is a free-libre webcomic — please support its author at https://www.peppercarrot.com/.
+**愛さずにはいられない** — The second and third examples are pages from *愛さずにはいられない* (I Can't Help But Love You) by よしまさこ, © よしまさこ / 集英社. These pages are from the [Manga109](http://www.manga109.org/) dataset (`Manga109s_released_2023_12_07`) and are used here for non-commercial research and demonstration purposes only, under the [Manga109 research license](http://www.manga109.org/en/agreement.html).
 

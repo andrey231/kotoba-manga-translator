@@ -8,13 +8,14 @@ Kotoba — manga translator with character memory.
 согласованный перевод (правильные имена, грамматический род, тон речи).
 
 Пайплайн на страницу:
-  1. Детекция баблов     — RT-DETRv2
+  1. Детекция баблов     — /v2
   2. OCR                 — glm-ocr через Ollama
   3. Анализ персонажей   — vision LLM + CharacterArchive
   4. Анализ сцены        — vision LLM + MangaContext
   5. Атрибуция реплик    — vision LLM (кто говорит + пол)
   6. Перевод             — текстовый LLM с учётом контекста
-  7. Отрисовка и запись  — PIL, OpenCV
+  7. SAM2-сегментация    — точные маски текстовых пикселей
+  8. Отрисовка и запись  — PIL, OpenCV (инпейтинг через LaMa)
 """
 
 import os
@@ -23,7 +24,6 @@ import json
 import time
 import base64
 import warnings
-
 import cv2
 import numpy as np
 import requests
@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 OLLAMA_URL = "http://localhost:11434/api/generate"
-CROPS_DIR = "crops"
+CROPS_DIR: str = "crops"   # переопределяется web.py под каждый job_id
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
 BUBBLE_MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
@@ -70,7 +70,6 @@ _META_MARKERS: tuple[str, ...] = (
     "примечание:", "обратите внимание",
 )
 
-os.makedirs(CROPS_DIR, exist_ok=True)
 
 
 # ─── инициализация моделей ────────────────────────────────────────────────────
@@ -105,6 +104,100 @@ def load_detector():
 
 inpaint_model = load_inpainting_model()
 detector_processor, detector_model = load_detector()
+
+# SAM predictor — lazy-loaded on first use.
+# SAM2 ломается в embedded Python (Hydra вызывает inspect.getsource на C-функциях).
+# Порядок попыток:
+# ─── Comic Text Detector (ONNX) ───────────────────────────────────────────────
+# Специализированная модель для манги/комиксов — работает на полной странице,
+# выдаёт попиксельную маску текста. Устанавливается через onnxruntime (PyPI),
+# веса (~30 MB) скачиваются с HuggingFace при первом запуске.
+_ctd_session = None
+_CTD_MODEL_ID   = "mayocream/comic-text-detector-onnx"
+_CTD_MODEL_FILE = "comic-text-detector.onnx"
+_CTD_INPUT_SIZE = 1024
+
+
+def _get_ctd_session():
+    """Загружает ONNX-сессию Comic Text Detector. Возвращает None если недоступна."""
+    global _ctd_session
+    if _ctd_session is not None:
+        return _ctd_session if _ctd_session is not False else None
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("[ctd] ⚠ Install: pip install onnxruntime-gpu  (или onnxruntime для CPU)")
+        _ctd_session = False
+        return None
+
+    try:
+        ckpt = hf_hub_download(_CTD_MODEL_ID, _CTD_MODEL_FILE)
+        providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]
+                     if DEVICE == "cuda" else ["CPUExecutionProvider"])
+        sess = ort.InferenceSession(ckpt, providers=providers)
+        _ctd_session = sess
+        used = sess.get_providers()[0].replace("ExecutionProvider", "")
+        print(f"[ctd] Loaded Comic Text Detector ({used})")
+        return sess
+    except Exception as e:
+        print(f"[ctd] ⚠ Ошибка загрузки модели: {e}")
+        _ctd_session = False
+        return None
+
+
+def _ctd_page_mask(img_cv: np.ndarray) -> np.ndarray | None:
+    """
+    Запускает CTD на полной странице.
+    Возвращает uint8-маску того же размера (текст=255, фон=0) или None.
+    """
+    sess = _get_ctd_session()
+    if sess is None:
+        return None
+
+    h, w = img_cv.shape[:2]
+    s = _CTD_INPUT_SIZE
+
+    # Letterbox: масштаб сохраняя пропорции, паддинг до квадрата
+    scale = s / max(h, w)
+    nh, nw = int(h * scale), int(w * scale)
+    resized = cv2.resize(img_cv, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((s, s, 3), dtype=np.float32)
+    canvas[:nh, :nw] = resized.astype(np.float32) / 255.0
+
+    # NCHW float32
+    inp = canvas.transpose(2, 0, 1)[np.newaxis]
+
+    try:
+        input_name = sess.get_inputs()[0].name
+        outputs = sess.run(None, {input_name: inp})
+    except Exception as e:
+        print(f"[ctd] inference error: {e}")
+        return None
+
+    # Ищем выход с пространственными размерами ≥ s/2
+    mask_raw = None
+    for out in outputs:
+        if out.ndim >= 2 and min(out.shape[-2:]) >= s // 2:
+            mask_raw = out
+            break
+    if mask_raw is None:
+        mask_raw = max(outputs, key=lambda o: o.size)
+
+    m = mask_raw.squeeze()
+    if m.ndim == 3:
+        # [C, H, W] — если 2 канала: берём текстовый (1-й), иначе 0-й
+        m = m[1] if m.shape[0] == 2 else m[0]
+
+    # Нормализуем к [0,255] uint8
+    if m.max() <= 1.0:
+        m = (m > 0.5).astype(np.uint8) * 255
+    else:
+        m = (m > 127).astype(np.uint8) * 255
+
+    # Убираем паддинг и возвращаем к исходному размеру
+    m_crop = m[:nh, :nw]
+    return cv2.resize(m_crop, (w, h), interpolation=cv2.INTER_NEAREST).astype(np.uint8)
 
 
 # ─── архив персонажей ─────────────────────────────────────────────────────────
@@ -309,6 +402,13 @@ def clean_text(text: str) -> str:
     """Убирает markdown-артефакты и лишние пробелы, сохраняя переносы строк."""
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     text = re.sub(r"`+", "", text)
+    # LaTeX circled numbers → Unicode: $\textcircled{2}$ → ②
+    def _circled(m):
+        n = int(m.group(1))
+        if 1 <= n <= 20:
+            return chr(0x2460 + n - 1)
+        return m.group(0)
+    text = re.sub(r"\$\s*\\?textcircled\{(\d+)\}\s*\$", _circled, text)
     # Схлопываем пробелы/табы внутри строки, но НЕ переносы строк
     text = re.sub(r"[^\S\n]+", " ", text)
     # Убираем лишние пустые строки (3+ подряд → 2)
@@ -319,6 +419,8 @@ def clean_text(text: str) -> str:
 # Когда True — каждый вызов ollama() пишет в stdout полный prompt и ответ.
 # Включается через env var OLLAMA_DEBUG=1 или прямой установкой DEBUG_LLM = True.
 DEBUG_LLM = os.environ.get("OLLAMA_DEBUG", "").strip() in ("1", "true", "yes", "on")
+# Когда задан — SAM debug-изображения сохраняются в эту папку (устанавливается web.py)
+SAM_DEBUG_DIR: str | None = None
 # Счётчик вызовов — чтобы в логе было видно номер запроса
 _OLLAMA_CALL_NUM = 0
 
@@ -1328,6 +1430,7 @@ def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
     """
     # ── Проход 1: основной ──
     processed = preprocess_crop(img_cv, x, y, w, h)
+    os.makedirs(CROPS_DIR, exist_ok=True)
     crop_path = os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{idx:02d}.png")
     cv2.imwrite(crop_path, processed)
     raw = ollama(
@@ -1483,50 +1586,130 @@ def _binarize_text_mask(crop_gray: np.ndarray) -> np.ndarray:
     return binary
 
 
+def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
+                        page_name: str = "") -> None:
+    """
+    Запускает Comic Text Detector ОДИН РАЗ на полной странице,
+    затем нарезает маску по баблам.
+    Результат в bubble["_sam2_mask"] — uint8, размер страницы.
+    """
+    active = [b for b in bubbles
+              if b.get("translation") and b.get("_sam2_mask") is None]
+    if not active:
+        return
+
+    page_mask = _ctd_page_mask(img_cv)
+    if page_mask is None:
+        return
+
+    h_img, w_img = img_cv.shape[:2]
+    _dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+
+    for b in active:
+        x, y, bw, bh = b["x"], b["y"], b["width"], b["height"]
+        x  = max(0, x);  y  = max(0, y)
+        x2 = min(w_img, x + bw); y2 = min(h_img, y + bh)
+        if x2 <= x or y2 <= y:
+            b["_sam2_mask"] = None
+            continue
+
+        ctd_crop = page_mask[y:y2, x:x2]
+        crop_bgr = img_cv[y:y2, x:x2]
+
+        # Otsu внутри CTD-зон — добирает тонкие штрихи которые CTD пропустил
+        otsu_crop    = _binarize_text_mask(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY))
+        ctd_dilated  = cv2.dilate(ctd_crop, _dilate_k)
+        otsu_in_zone = cv2.bitwise_and(otsu_crop, ctd_dilated)
+        combined     = cv2.bitwise_or(ctd_crop, otsu_in_zone)
+
+        m = np.zeros((h_img, w_img), dtype=np.uint8)
+        m[y:y2, x:x2] = combined
+        b["_sam2_mask"] = m
+
+        if SAM_DEBUG_DIR:
+            idx = b.get("idx", id(b))
+            overlay = crop_bgr.copy()
+            overlay[combined > 0] = (0, 200, 0)
+            vis = cv2.addWeighted(crop_bgr, 0.5, overlay, 0.5, 0)
+            prefix = f"{page_name}_" if page_name else ""
+            dbg_path = os.path.join(SAM_DEBUG_DIR, f"{prefix}b{idx:03d}.png")
+            cv2.imwrite(dbg_path, vis)
+            print(f"  [ctd-dbg] → {dbg_path}")
+
+
 def detect_text_color(img_cv: np.ndarray, bubble: dict,
                       default: tuple = (0, 0, 0)) -> tuple:
     """
     Определяет цвет текста в бабле.
 
-    text_free (логотипы, вольный текст на постере) — HSV-насыщенность:
-      Оцу на grayscale видит только тёмный контур букв, пропуская цветную
-      заливку. Для логотипов берём медиану насыщенных пикселей.
-    text_bubble (речевые пузыри) — Оцу: белый фон + чёрный текст, точно.
+    Приоритет:
+    1. SAM2-маска (если доступна) — точные пиксели текста
+    2. Маленький text_free (логотип) → HSV-насыщенность
+    3. Fallback: Оцу + sanity-check
     """
     x, y, w, h = bubble["x"], bubble["y"], bubble["width"], bubble["height"]
     crop = img_cv[y:y+h, x:x+w]
     if crop.size == 0:
         return default
 
-    # Маленький text_free (логотип, заголовок) → HSV: цветная заливка букв
-    # даёт насыщенные пиксели, Оцу их пропускает (видит только тёмный контур).
-    # Большой text_free (список, блок текста) → Оцу: иначе HSV захватит
-    # цветной фоновый арт вместо самого (чёрного) текста.
+    # 1. CTD-маска — пиксели текстовой области (может включать фон)
+    sam2_mask = bubble.get("_sam2_mask")
+    if sam2_mask is not None:
+        crop_mask = sam2_mask[y:y+h, x:x+w]
+        text_pixels = crop[crop_mask > 0]
+        if len(text_pixels) >= 10:
+            # Полярность по фону: светлый фон → тёмный текст, тёмный → светлый.
+            # CTD может захватывать полутоновый фон → берём только экстремальные пиксели.
+            bg_pix = crop[crop_mask == 0]
+            crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            bg_gray = float(np.mean(bg_pix)) if len(bg_pix) > 0 else float(np.mean(crop_gray))
+            gray_vals = np.mean(text_pixels.astype(np.float32), axis=1)
+            if bg_gray >= 128:
+                # Светлый/серый фон → чернила темнее → 25-й перцентиль
+                thr = min(float(np.percentile(gray_vals, 25)), 110)
+                ink = text_pixels[gray_vals <= thr]
+            else:
+                # Тёмный фон → чернила светлее → 75-й перцентиль
+                thr = max(float(np.percentile(gray_vals, 75)), 150)
+                ink = text_pixels[gray_vals >= thr]
+            if len(ink) >= 5:
+                bv, gv, rv = np.median(ink, axis=0).astype(int)
+                return (int(rv), int(gv), int(bv))
+            # Слишком мало экстремальных пикселей — обычная медиана
+            bv, gv, rv = np.median(text_pixels, axis=0).astype(int)
+            return (int(rv), int(gv), int(bv))
+
+    # 2. Маленький text_free (логотип, заголовок) → HSV-насыщенность:
+    # Оцу видит только тёмный контур, а цветная заливка букв — в насыщенных пикселях.
+    # НО: если насыщенные пиксели — это ФОН (> 40% кропа), а не текст — пропускаем.
+    # Пример: чёрный текст на красном фоне → почти весь кроп насыщен → это фон.
     bubble_area = bubble.get("width", 0) * bubble.get("height", 0)
     if bubble.get("class") == "text_free" and bubble_area < _LARGE_BUBBLE_PX:
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         sat_mask = (hsv[:, :, 1] > 100) & (hsv[:, :, 2] > 80)
+        sat_frac = np.mean(sat_mask)
         sat_pixels = crop[sat_mask]
-        if len(sat_pixels) >= 30:
-            b, g, r = np.median(sat_pixels, axis=0).astype(int)
-            r, g, b = int(r), int(g), int(b)
-            if max(abs(r - g), abs(g - b), abs(r - b)) > 40:
-                return (r, g, b)
+        # sat_frac < 0.4: насыщенные пиксели — меньшинство → это текст (логотип)
+        if sat_frac < 0.4 and len(sat_pixels) >= 30:
+            bv, gv, rv = np.median(sat_pixels, axis=0).astype(int)
+            rv, gv, bv = int(rv), int(gv), int(bv)
+            if max(abs(rv - gv), abs(gv - bv), abs(rv - bv)) > 40:
+                return (rv, gv, bv)
 
+    # 3. Fallback: Оцу
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     mask = _binarize_text_mask(gray)
     text_pixels = crop[mask > 0]
     if len(text_pixels) < 10:
         return default
-    b, g, r = np.median(text_pixels, axis=0).astype(int)
-    # Sanity check: if detected text color is too close to background color,
-    # Otsu split background noise instead of text — fall back to default.
+    bv, gv, rv = np.median(text_pixels, axis=0).astype(int)
+    # Sanity check: если цвет текста слишком близок к фону — Оцу ошибся
     bg_pixels = crop[mask == 0]
     if len(bg_pixels) > 0:
         bb, bg_g, br = np.median(bg_pixels, axis=0).astype(int)
-        if max(abs(r - br), abs(g - bg_g), abs(b - bb)) < 40:
+        if max(abs(rv - br), abs(gv - bg_g), abs(bv - bb)) < 40:
             return default
-    return (int(r), int(g), int(b))
+    return (int(rv), int(gv), int(bv))
 
 
 # ─── инпейтинг ────────────────────────────────────────────────────────────────
@@ -1534,22 +1717,42 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
 _LARGE_BUBBLE_PX = 80_000  # порог (px²) — выше него используем глифовую маску
 
 
+def _fill_mask_holes(mask: np.ndarray) -> np.ndarray:
+    """
+    Заполняет замкнутые дыры внутри бинарной маски (текст=255, фон=0).
+    Алгоритм: заливка фона снаружи → всё что не залито и не текст = дыры.
+    """
+    h, w = mask.shape
+    # Паддинг нулями гарантирует связность фона от края
+    padded = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    padded[1:h+1, 1:w+1] = mask
+    inv = cv2.bitwise_not(padded)
+    # Заливка от угла достигает всего внешнего фона
+    cv2.floodFill(inv, None, (0, 0), 0)
+    # Оставшиеся 255 в inv — замкнутые дыры
+    holes = inv[1:h+1, 1:w+1]
+    return cv2.bitwise_or(mask, holes)
+
+
 def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict],
                         shrink: int = 1) -> np.ndarray:
     """
     Строит маску для инпейтинга: 255 = стираем, 0 = оставляем.
 
-    Стратегия по размеру бабла:
-    - Маленький (< _LARGE_BUBBLE_PX): полный bbox — LaMa справляется с небольшой
-      областью даже для стилизованных логотипов с градиентом.
-    - Большой (>= _LARGE_BUBBLE_PX): глифовая маска — стираем только пиксели текста,
-      оставляя фоновый арт нетронутым (большой bbox LaMa восстанавливает плохо).
+    Приоритет на бабл:
+    1. SAM2-маска (если доступна) — точная маска текстовых пикселей + дилатация 5px
+    2. Маленький бабл (< _LARGE_BUBBLE_PX): полный bbox
+    3. Большой бабл: глифовая маска через Оцу + морфология (fallback без SAM2)
     """
     h, w = img_cv.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
     img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
     connect_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
     dilate_k  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # Для CTD-маски: крупная дилатация + горизонтальное замыкание,
+    # чтобы тонкие штрихи (1-2px) и разрывы между ними полностью покрывались.
+    inpaint_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
+    closing_k = cv2.getStructuringElement(cv2.MORPH_RECT,    (17, 3))
 
     for b in bubbles:
         if not b.get("translation"):
@@ -1562,17 +1765,29 @@ def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict],
         if x1 <= x0 or y1 <= y0:
             continue
 
-        # Маленький бабл — полный bbox (надёжнее для логотипов/мелких областей)
+        # 1. CTD-маска — замыкание соединяет горизонтальные разрывы, дилатация покрывает края
+        sam2_mask = b.get("_sam2_mask")
+        if sam2_mask is not None:
+            crop_m = sam2_mask[y0:y1, x0:x1]
+            coverage = np.count_nonzero(crop_m) / max(crop_m.size, 1)
+            if coverage >= 0.05 and crop_m.any():
+                # CTD нашёл достаточно текста — используем маску
+                closed = cv2.morphologyEx(crop_m, cv2.MORPH_CLOSE, closing_k)
+                glyph  = cv2.dilate(closed, inpaint_k)
+                glyph  = _fill_mask_holes(glyph)   # заполняем дыры внутри символов
+                mask[y0:y1, x0:x1] = np.maximum(mask[y0:y1, x0:x1], glyph)
+                continue
+            # CTD нашёл < 5% bbox — маска ненадёжна, падаем на полный bbox
+
+        # 2. Маленький бабл — полный bbox (логотипы, мелкие области)
         if bw * bh < _LARGE_BUBBLE_PX:
             mask[y0:y1, x0:x1] = 255
             continue
 
-        # Большой бабл — глифовая маска чтобы не трогать фоновый арт
+        # 3. Большой бабл — глифовая маска через Оцу
         crop_gray = img_gray[y0:y1, x0:x1]
         glyph = _binarize_text_mask(crop_gray)
-
         if np.count_nonzero(glyph) > 0.75 * glyph.size:
-            # Бинаризация не справилась (шумный фон) — полный bbox
             mask[y0:y1, x0:x1] = 255
         else:
             glyph = cv2.dilate(glyph, connect_k)
@@ -2063,7 +2278,7 @@ def _fit_at_exact_size(draw, text: str, box_w: int, box_h: int,
 
 
 def draw_results(img_cv: np.ndarray, bubbles: list[dict],
-                 debug: bool = False) -> np.ndarray:
+                 debug: bool = False, page_name: str = "") -> np.ndarray:
     """
     Заливает оригинальный текст через LaMa-инпейтинг, затем рисует переводы
     с цветом оригинала. Текст рисуется горизонтально (поворот не используется —
@@ -2072,12 +2287,16 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
     debug=False (по умолчанию): чистая страница, только заменённый текст.
     debug=True: дополнительно цветные рамки и номера баблов для диагностики.
     """
-    # 1. Определяем цвет текста ДО того как сотрём оригинал
+    # 1. Маски текста через Comic Text Detector (один проход на страницу)
+    print("  Segmenting text regions (CTD)...")
+    _compute_text_masks(img_cv, bubbles, page_name=page_name)
+
+    # 2. Определяем цвет текста ДО того как сотрём оригинал
     for b in bubbles:
         if b.get("translation") and b.get("_text_color") is None:
             b["_text_color"] = detect_text_color(img_cv, b)
 
-    # 2. Инпейнтим оригинальный текст
+    # 3. Инпейнтим оригинальный текст
     print("  Inpainting original text (LaMa)...")
     inpainted = inpaint_page(img_cv, bubbles)
 
@@ -2233,7 +2452,7 @@ def process_page(image_path: str, page_idx: int,
                        f"Bubble #{i+1}: OCR returned no text after two passes",
                        bubble_idx=i+1,
                        bbox=f"({b['x']},{b['y']},{b['width']}x{b['height']})",
-                       crop=f"crops/p{page_idx:03d}_bubble_{i+1:02d}.png")
+                       crop=os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{i+1:02d}.png"))
 
     if fast_mode:
         # Пропускаем стадии analyze и attribute. Без них:
@@ -2293,7 +2512,8 @@ def process_page(image_path: str, page_idx: int,
 
     # 8. Сохраняем аннотированное изображение
     stage("stage_inpaint")
-    annotated = draw_results(img_cv, text_bubbles, debug=debug)
+    annotated = draw_results(img_cv, text_bubbles, debug=debug,
+                             page_name=os.path.splitext(os.path.basename(output_path))[0])
     cv2.imwrite(output_path, annotated)
 
     # Сводка по странице
@@ -2350,7 +2570,7 @@ def process_directory(input_dir: str, output_dir: str = "results",
     # Проверяем шрифт. Если указан — используем его. Если нет — пробуем
     # типичные манга-friendly шрифты по очереди, отдавая предпочтение жирным.
     def _resolve_font(requested: str) -> str | None:
-        """Возвращает рабочий путьGТепеweТе к шрифту или None."""
+        """Возвращает рабочий путьGТепеweТеУУCЫ к шрифту или None."""
         # 1. Сначала пробуем то что запросил пользователь
         try:
             ImageFont.truetype(requested, 12)

@@ -219,6 +219,7 @@ async def upload_chapter(
     llm_model: str = Form(""),
     llm_debug: bool = Form(False),
     fast_mode: bool = Form(False),
+    sam_debug: bool = Form(False),
 ):
     """
     Создаёт job, сохраняет файлы, возвращает job_id.
@@ -251,6 +252,7 @@ async def upload_chapter(
             "llm_model": llm_model.strip() or None,
             "llm_debug": llm_debug,
             "fast_mode": fast_mode,
+            "sam_debug": sam_debug,
         },
         "total": len(saved),
         "completed": 0,
@@ -345,6 +347,20 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         mt.DEBUG_LLM = bool(cfg.get("llm_debug"))
         if mt.DEBUG_LLM:
             print("\n*** VERBOSE LLM LOGGING ENABLED — every prompt/response will be printed ***\n")
+
+        # Кропы OCR — изолируем по job_id
+        crops_dir = result_dir / "crops"
+        crops_dir.mkdir(exist_ok=True)
+        mt.CROPS_DIR = str(crops_dir)
+
+        # SAM mask debug — сохраняем в папку результатов этого джоба
+        if cfg.get("sam_debug"):
+            sam_dbg_dir = result_dir / "sam_debug"
+            sam_dbg_dir.mkdir(exist_ok=True)
+            mt.SAM_DEBUG_DIR = str(sam_dbg_dir)
+            print(f"[sam-dbg] Mask debug enabled → {sam_dbg_dir}")
+        else:
+            mt.SAM_DEBUG_DIR = None
 
         await asyncio.to_thread(
             mt.process_directory,

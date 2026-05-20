@@ -430,6 +430,15 @@
           </div>
         </span>
       </div>
+      <div class="checkbox">
+        <input type="checkbox" id="cfg-sam-debug">
+        <label for="cfg-sam-debug" style="margin:0; font-size:14px;" data-i18n="cfg_sam_debug">SAM mask debug</label>
+        <span class="help-icon" tabindex="0">?
+          <div class="tooltip">
+            <span data-i18n="cfg_sam_debug_help">Save SAM segmentation mask for each bubble as sam_debug_N.png in the project folder. Green overlay = mask, red dots = Otsu hint points.</span>
+          </div>
+        </span>
+      </div>
     </div>
   </div>
 
@@ -520,6 +529,8 @@ const I18N = {
     cfg_llm_debug_help: "When enabled, every prompt sent to the LLM and every response from it is printed to the server console. Useful for diagnosing translation issues. Slows things down and produces a lot of output.",
     cfg_fast_mode:    "Fast mode (no context)",
     cfg_fast_mode_help: "Skip page analysis and speaker attribution. Saves 2-3 vision-LLM calls per page (~30-60 seconds), but bubbles are translated without scene context and the character archive is not updated. Useful for quick drafts.",
+    cfg_sam_debug:    "SAM mask debug",
+    cfg_sam_debug_help: "Save SAM segmentation mask for each bubble as sam_debug_N.png in the project folder. Green overlay = mask, red dots = Otsu hint points.",
     legend_title:     "Box colors on result",
     legend_green:     "Green — text bubble translated successfully",
     legend_blue:      "Blue — free-floating text (SFX) translated",
@@ -605,6 +616,8 @@ const I18N = {
     cfg_llm_debug_help: "Когда включено, каждый запрос к LLM и каждый ответ от неё печатаются в консоль сервера. Полезно для диагностики проблем с переводом. Замедляет работу и производит много вывода.",
     cfg_fast_mode:    "Быстрый режим (без контекста)",
     cfg_fast_mode_help: "Пропускает анализ страницы и определение спикеров. Экономит 2-3 vision-вызова на страницу (≈30-60 секунд), но баблы переводятся без контекста сцены, и архив персонажей не обновляется. Полезно для быстрых черновых переводов.",
+    cfg_sam_debug:    "Дебаг маски SAM",
+    cfg_sam_debug_help: "Сохраняет маску сегментации SAM для каждого бабла в файлы sam_debug_N.png в папке проекта. Зелёный = маска, красные точки = подсказки Otsu.",
     legend_title:     "Цвета рамок на результате",
     legend_green:     "Зелёный — бабл переведён успешно",
     legend_blue:      "Синий — текст вне бабла (SFX) переведён",
@@ -788,6 +801,7 @@ async function startUpload(files) {
   form.append('llm_model', $('cfg-model').value || '');
   form.append('llm_debug', $('cfg-llm-debug').checked ? 'true' : 'false');
   form.append('fast_mode', $('cfg-fast-mode').checked ? 'true' : 'false');
+  form.append('sam_debug', $('cfg-sam-debug').checked ? 'true' : 'false');
 
   log(t("upload_loading", files.length));
   $('progress-wrap').style.display = 'block';
@@ -1246,6 +1260,9 @@ function restoreConfig() {
   if (saved.fast_mode) {
     $('cfg-fast-mode').checked = !!saved.fast_mode;
   }
+  if (saved.sam_debug) {
+    $('cfg-sam-debug').checked = !!saved.sam_debug;
+  }
 }
 
 function saveConfig() {
@@ -1255,6 +1272,7 @@ function saveConfig() {
     debug: $('cfg-debug').checked,
     llm_debug: $('cfg-llm-debug').checked,
     fast_mode: $('cfg-fast-mode').checked,
+    sam_debug: $('cfg-sam-debug').checked,
     llm_model: $('cfg-model').value || "",
   };
   localStorage.setItem("config", JSON.stringify(cfg));
@@ -1262,7 +1280,7 @@ function saveConfig() {
 
 function wireConfigPersistence() {
   // Persist any change to any config control
-  ['cfg-lang', 'cfg-font', 'cfg-debug', 'cfg-llm-debug', 'cfg-fast-mode', 'cfg-model'].forEach(id => {
+  ['cfg-lang', 'cfg-font', 'cfg-debug', 'cfg-llm-debug', 'cfg-fast-mode', 'cfg-sam-debug', 'cfg-model'].forEach(id => {
     const el = $(id);
     if (!el) return;
     el.addEventListener('change', saveConfig);

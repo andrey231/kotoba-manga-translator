@@ -1,40 +1,34 @@
 # Sample Artwork Attribution
 
-The files in this directory contain artwork from the webcomic
-**Pepper&Carrot** by David Revoy.
+## Pepper&Carrot (samples 1)
 
-## Source
+- **Source:** https://www.peppercarrot.com/
+- **Artist:** David Revoy (https://www.davidrevoy.com/)
+- **License:** [Creative Commons Attribution 4.0 International (CC-BY 4.0)](https://creativecommons.org/licenses/by/4.0/)
 
-- Website: https://www.peppercarrot.com/
-- Artist: David Revoy (https://www.davidrevoy.com/)
+You are free to share and adapt the material for any purpose, even commercially, provided you give appropriate credit.
 
-## License
+The Chinese localization shown in `sample_1_original.jpg` was contributed by the Pepper&Carrot community.  
+`sample_1_translated.png` is a derivative work produced by Kotoba and is distributed under the same CC-BY 4.0 license.
 
-Licensed under the **Creative Commons Attribution 4.0 International License
-(CC-BY 4.0)**: https://creativecommons.org/licenses/by/4.0/
+Support the artist: https://www.peppercarrot.com/
 
-You are free to:
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material for any purpose,
-  even commercially
+---
 
-Under the following terms:
-- Attribution — You must give appropriate credit, provide a link to the
-  license, and indicate if changes were made.
+## 愛さずにはいられない / I Can't Help But Love You (samples 2–3)
 
-## Files
+- **Title:** 愛さずにはいられない
+- **Author:** よしまさこ
+- **Publisher:** 集英社 (Shueisha)
+- **Dataset:** [Manga109](http://www.manga109.org/) — `Manga109s_released_2023_12_07`
+- **License:** [Manga109 Research License](http://www.manga109.org/en/agreement.html) — non-commercial research and educational use only
 
-- `sample_original.jpg` — Original page (Chinese localization). The Chinese
-  translation was contributed by the Pepper&Carrot community.
-- `sample_translated.png` — The same page translated to Russian by Kotoba.
-  The translation overlay is a derivative work produced by Kotoba and is
-  distributed under the same CC-BY 4.0 license as the original.
+© よしまさこ / 集英社. All rights reserved by the original copyright holders.  
+These pages are included solely for non-commercial demonstration of Kotoba's translation pipeline.
 
-## Support the artist
+### Files
 
-Pepper&Carrot is a free, libre, open-source webcomic supported entirely by
-its community. If you enjoy it, consider supporting David Revoy directly:
-
-- Patreon: https://www.patreon.com/davidrevoy
-- Tipeee: https://www.tipeee.com/davidrevoy
-- Liberapay: https://liberapay.com/davidrevoy/
+- `sample_2_original.jpg` — Title/intro page (original Japanese)
+- `sample_2_translated.png` — Translated to English by Kotoba
+- `sample_3_original.jpg` — Manga page (original Japanese)
+- `sample_3_translated.png` — Translated to English by Kotoba

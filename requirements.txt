@@ -11,6 +11,9 @@ torch>=2.3                  # включая поддержку TorchScript дл
 torchvision>=0.18           # требуется transformers для AutoImageProcessor
 transformers>=4.44          # RT-DETRv2 для детекции баблов
 huggingface_hub>=0.24       # скачивание anime-big-lama
+# Сегментация текста — Comic Text Detector (ONNX, специализирован для манги)
+# Веса (~30 MB) скачиваются с HuggingFace при первом запуске автоматически.
+onnxruntime-gpu>=1.18      # GPU-инференс; замените на onnxruntime если нет CUDA
 
 # Изображения и шрифты
 Pillow>=10.4
