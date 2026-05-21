@@ -419,8 +419,8 @@ def clean_text(text: str) -> str:
 # Когда True — каждый вызов ollama() пишет в stdout полный prompt и ответ.
 # Включается через env var OLLAMA_DEBUG=1 или прямой установкой DEBUG_LLM = True.
 DEBUG_LLM = os.environ.get("OLLAMA_DEBUG", "").strip() in ("1", "true", "yes", "on")
-# Когда задан — SAM debug-изображения сохраняются в эту папку (устанавливается web.py)
-SAM_DEBUG_DIR: str | None = None
+# Когда задан — debug-изображения масок сохраняются в эту папку (устанавливается web.py)
+MASK_DEBUG_DIR: str | None = None
 # Счётчик вызовов — чтобы в логе было видно номер запроса
 _OLLAMA_CALL_NUM = 0
 
@@ -1626,13 +1626,13 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
         m[y:y2, x:x2] = combined
         b["_sam2_mask"] = m
 
-        if SAM_DEBUG_DIR:
+        if MASK_DEBUG_DIR:
             idx = b.get("idx", id(b))
             overlay = crop_bgr.copy()
             overlay[combined > 0] = (0, 200, 0)
             vis = cv2.addWeighted(crop_bgr, 0.5, overlay, 0.5, 0)
             prefix = f"{page_name}_" if page_name else ""
-            dbg_path = os.path.join(SAM_DEBUG_DIR, f"{prefix}b{idx:03d}.png")
+            dbg_path = os.path.join(MASK_DEBUG_DIR, f"{prefix}b{idx:03d}.png")
             cv2.imwrite(dbg_path, vis)
             print(f"  [ctd-dbg] → {dbg_path}")
 
