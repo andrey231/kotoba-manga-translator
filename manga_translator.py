@@ -97,7 +97,10 @@ def load_inpainting_model():
 
 
 def load_detector():
-    processor = AutoImageProcessor.from_pretrained(BUBBLE_MODEL_ID)
+    processor = AutoImageProcessor.from_pretrained(
+        BUBBLE_MODEL_ID,
+        size={"height": 960, "width": 960},
+    )
     model = RTDetrV2ForObjectDetection.from_pretrained(BUBBLE_MODEL_ID)
     model.eval()
     return processor, model
@@ -116,8 +119,6 @@ _ctd_session = None
 _CTD_MODEL_ID   = "mayocream/comic-text-detector-onnx"
 _CTD_MODEL_FILE = "comic-text-detector.onnx"
 _CTD_INPUT_SIZE = 1024
-
-
 def _get_ctd_session():
     """Загружает ONNX-сессию Comic Text Detector. Возвращает None если недоступна."""
     global _ctd_session
@@ -293,6 +294,8 @@ class CharacterArchive:
 
     def find_character(self, description: str) -> dict | None:
         """Находит персонажа по имени или ID в строке описания."""
+        if not description:
+            return None
         desc_lower = description.lower()
         for cid, c in self.characters.items():
             if c["name"].lower() in desc_lower or cid.lower() in desc_lower:
@@ -1010,6 +1013,7 @@ Return ONLY JSON:
 
 
 # ─── перевод ──────────────────────────────────────────────────────────────────
+_TRANSLATE_CHUNK_SIZE = 5
 
 def translate_batch(bubbles: list[dict], page_context: str,
                     manga_ctx: MangaContext, target_lang: str = "Russian",
@@ -1053,12 +1057,11 @@ def translate_batch(bubbles: list[dict], page_context: str,
 
     missing_indices = []  # глобальные индексы в to_translate, которые не перевелись
 
-    CHUNK_SIZE = 5
-    chunks = [to_translate[i:i + CHUNK_SIZE]
-              for i in range(0, len(to_translate), CHUNK_SIZE)]
+    chunks = [to_translate[i:i + _TRANSLATE_CHUNK_SIZE]
+              for i in range(0, len(to_translate), _TRANSLATE_CHUNK_SIZE)]
     if len(chunks) > 1:
         print(f"     [batch] Splitting {len(to_translate)} bubbles into "
-              f"{len(chunks)} chunks of up to {CHUNK_SIZE}")
+              f"{len(chunks)} chunks of up to {_TRANSLATE_CHUNK_SIZE}")
     for chunk_idx, chunk in enumerate(chunks):
         _translate_chunk(
             chunk, chunk_idx, to_translate, missing_indices,
@@ -1103,8 +1106,9 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
     чтобы общий промпт был достаточно большим — gemma4 иногда возвращает пустую
     строку на очень короткие промпты, и расширение помогает.
     """
-    # Локальная нумерация в чанке (1-based), но запоминаем глобальный индекс
-    local_to_global = {i + 1: chunk[i][0] for i in range(len(chunk))}
+    # Локальная нумерация в чанке (1-based) → индекс в to_translate
+    chunk_offset = chunk_idx * _TRANSLATE_CHUNK_SIZE
+    local_to_global = {i + 1: chunk_offset + i for i in range(len(chunk))}
 
     # Padding для совсем маленьких чанков. Промпт становится "весомее"
     # и модель надёжнее возвращает структурированный JSON.
@@ -1462,6 +1466,22 @@ def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
     )
     cleaned2 = clean_text(raw2)
 
+    # Если модель вернула собственный промпт вместо текста — выбрасываем ответ
+    _PROMPT_ECHO_MARKERS = (
+        "read any text", "return only what is written", "no explanation",
+        "visible in this image", "letters, or characters",
+    )
+    def _is_prompt_echo(s: str) -> bool:
+        low = s.lower()
+        return sum(1 for m in _PROMPT_ECHO_MARKERS if m in low) >= 2
+
+    if _is_prompt_echo(cleaned2):
+        print(f"     [OCR echo] bubble {idx}: retry returned prompt echo, discarding")
+        cleaned2 = ""
+    if _is_prompt_echo(cleaned):
+        print(f"     [OCR echo] bubble {idx}: primary returned prompt echo, discarding")
+        cleaned = ""
+
     # Берём лучший из двух результатов
     final = cleaned2 if len(cleaned2) > len(cleaned) else cleaned
 
@@ -1626,6 +1646,29 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
         m[y:y2, x:x2] = combined
         b["_sam2_mask"] = m
 
+        # Угол поворота текста — PCA на координатах ненулевых пикселей CTD-маски.
+        # Первая главная компонента = направление базелайна текста.
+        # Надёжность: sv[0]/sv[1] — насколько «вытянуто» облако точек:
+        #   ≥ 2.0 → чётко направленное (наклонный SFX, вертикальный текст)
+        #   < 2.0 → изотропное (горизонтальные строки, шум) → угол = 0°
+        pts = cv2.findNonZero(combined)
+        if pts is not None and len(pts) >= 30:
+            coords = pts.reshape(-1, 2).astype(np.float64)
+            centered = coords - coords.mean(axis=0)
+            _, sv, vt = np.linalg.svd(centered, full_matrices=False)
+            elongation = sv[0] / max(sv[1], 1e-6)
+            if elongation >= 2.0:
+                dx, dy = vt[0]          # направление первой главной компоненты
+                angle = float(np.degrees(np.arctan2(dy, dx)))
+                if angle > 90:  angle -= 180
+                if angle <= -90: angle += 180
+                b["_text_angle"] = angle
+            else:
+                b["_text_angle"] = 0.0  # облако изотропно — поворот не определён
+        else:
+            b["_text_angle"] = 0.0
+
+
         if MASK_DEBUG_DIR:
             idx = b.get("idx", id(b))
             overlay = crop_bgr.copy()
@@ -1771,10 +1814,25 @@ def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict],
             crop_m = sam2_mask[y0:y1, x0:x1]
             coverage = np.count_nonzero(crop_m) / max(crop_m.size, 1)
             if coverage >= 0.05 and crop_m.any():
-                # CTD нашёл достаточно текста — используем маску
                 closed = cv2.morphologyEx(crop_m, cv2.MORPH_CLOSE, closing_k)
                 glyph  = cv2.dilate(closed, inpaint_k)
-                glyph  = _fill_mask_holes(glyph)   # заполняем дыры внутри символов
+
+                # Otsu внутри вертикального диапазона CTD-строк — добирает текст
+                # который CTD пропустил (например строка посередине на сложном фоне).
+                rows_with_text = np.any(crop_m > 0, axis=1)
+                if rows_with_text.any():
+                    r_top = int(np.argmax(rows_with_text))
+                    r_bot = int(len(rows_with_text) - 1 - np.argmax(rows_with_text[::-1]))
+                    sub_gray = img_gray[y0 + r_top: y0 + r_bot + 1, x0:x1]
+                    otsu_sub = _binarize_text_mask(sub_gray)
+                    otsu_sub = cv2.dilate(
+                        otsu_sub, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                    )
+                    otsu_full = np.zeros(crop_m.shape, dtype=np.uint8)
+                    otsu_full[r_top: r_bot + 1, :] = otsu_sub
+                    glyph = cv2.bitwise_or(glyph, otsu_full)
+
+                glyph  = _fill_mask_holes(glyph)
                 mask[y0:y1, x0:x1] = np.maximum(mask[y0:y1, x0:x1], glyph)
                 continue
             # CTD нашёл < 5% bbox — маска ненадёжна, падаем на полный bbox
@@ -2325,11 +2383,48 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
         if ew < 20 or eh < 20:
             continue
 
-        block = _render_text_block(
-            translation, ew, eh, color,
-            font_path=b.get("font_path"),
-            font_size_override=b.get("font_size"),
-        )
+        text_angle = b.get("_text_angle", 0.0)
+
+        # Японский вертикальный текст (угол ≥ 45°) переводим горизонтально:
+        # в русском порядок чтения противоположный, поворот не нужен.
+        if abs(text_angle) > 45:
+            src = b.get("text", "")
+            if any('぀' <= c <= 'ヿ' or '一' <= c <= '鿿' for c in src):
+                text_angle = 0.0
+                print(f"  [jp→ru] bubble {i+1} angle={b['_text_angle']:.0f}° japanese → render horizontal")
+
+        if abs(text_angle) > 45:
+            # Вертикальный текст: рендерим «горизонтально» с переставленными
+            # размерами, затем поворачиваем на ±90° — читается сверху вниз.
+            rot_deg = -90 if text_angle > 0 else 90
+            block = _render_text_block(
+                translation, eh, ew, color,
+                font_path=b.get("font_path"),
+                font_size_override=b.get("font_size"),
+            )
+            block = block.rotate(rot_deg, expand=True)
+        elif abs(text_angle) > 15:
+            # Наклонный текст: рендерим в номинальных размерах, поворачиваем.
+            block = _render_text_block(
+                translation, ew, eh, color,
+                font_path=b.get("font_path"),
+                font_size_override=b.get("font_size"),
+            )
+            block = block.rotate(-text_angle, expand=True)
+        else:
+            # Горизонтальный текст — без поворота.
+            block = _render_text_block(
+                translation, ew, eh, color,
+                font_path=b.get("font_path"),
+                font_size_override=b.get("font_size"),
+            )
+
+        # Обрезаем до размеров effective-бокса (центрирование) — блок не вылазит.
+        bw_r, bh_r = block.size
+        if bw_r != ew or bh_r != eh:
+            cx = max(0, (bw_r - ew) // 2)
+            cy = max(0, (bh_r - eh) // 2)
+            block = block.crop((cx, cy, cx + ew, cy + eh))
         pil.paste(block, (ex, ey), block)
 
     # 4. Debug-оверлей рисуем поверх — рамки и номера
@@ -2408,6 +2503,21 @@ def process_page(image_path: str, page_idx: int,
 
     # 1. Детекция и сортировка баблов (PIL уже в памяти — файл не перечитывается)
     bubbles = detect_bubbles(image_pil, threshold=0.5)
+    # Второй проход с пониженным порогом — ловим text_free SFX на сложном фоне
+    # (типа "DWEH!" поверх тела персонажа), которые детектор пропускает при 0.5.
+    for b in detect_bubbles(image_pil, threshold=0.3):
+        if b["class"] != "text_free":
+            continue
+        bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
+        # Пропускаем, если уже покрыт существующим баблом на >30 %
+        covered = any(
+            max(0, min(bx + bw, e["x"] + e["width"])  - max(bx, e["x"])) *
+            max(0, min(by + bh, e["y"] + e["height"]) - max(by, e["y"])) > 0.3 * bw * bh
+            for e in bubbles
+        )
+        if not covered:
+            bubbles.append(b)
+            print(f"  [sfx+] text_free @ ({bx},{by}) score={b['confidence']:.2f}")
     bubbles = _clip_overlapping_boxes(bubbles)
     text_bubbles = sorted(
         [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
