@@ -2552,13 +2552,15 @@ def process_directory(input_dir: str, output_dir: str = "results",
                       on_page_done=None,
                       on_start=None,
                       on_finish=None,
-                      on_stage=None):
+                      on_stage=None,
+                      cancel_event=None):
     """
     llm_model — Ollama-модель для анализа/перевода. Если None — используется LLM_MODEL.
     fast_mode — быстрый режим: пропускает анализ страницы и атрибуцию баблов
         к спикерам. Экономит ~2-3 vision-вызова и 30-60с на страницу.
         Качество перевода может быть хуже (нет контекста сцены и speaker),
         зато перевод занимает минимальное время.
+    cancel_event — threading.Event; если установлен между страницами, перевод останавливается.
     on_stage(page_idx, stage_key) — прогресс внутри страницы:
         stage_detect → stage_ocr → stage_analyze → stage_attribute
         → stage_translate → stage_inpaint
@@ -2641,6 +2643,9 @@ def process_directory(input_dir: str, output_dir: str = "results",
     all_bubbles: list[list[dict]] = []
 
     for page_idx, filename in enumerate(files, start=1):
+        if cancel_event and cancel_event.is_set():
+            print("[abort] Translation cancelled by user.")
+            break
         input_path = os.path.join(input_dir, filename)
         name = os.path.splitext(filename)[0]
         output_path = os.path.join(output_dir, f"{name}_translated.png")

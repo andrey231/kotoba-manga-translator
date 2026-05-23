@@ -353,7 +353,7 @@
   <div class="upload-zone" id="upload-zone">
     <p><strong data-i18n="upload_drop">Drop chapter pages here</strong></p>
     <p data-i18n="upload_or_click">or click to choose files (jpg, png, webp)</p>
-    <input type="file" id="file-input" multiple accept="image/*" style="display:none">
+    <input type="file" id="file-input" multiple accept="image/*,.zip,.cbz" style="display:none">
   </div>
 
   <div class="config">
@@ -446,6 +446,7 @@
     <div class="progress-meta">
       <span id="progress-text" data-i18n="progress_preparing">Preparing...</span>
       <span id="progress-time"></span>
+      <button id="btn-abort" class="btn-danger" style="display:none; padding:5px 14px; font-size:13px;" data-i18n="btn_abort">Abort</button>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
     <div class="log" id="log"></div>
@@ -521,7 +522,8 @@ const I18N = {
     tab_editor:       "Editor",
     tab_characters:   "Characters",
     upload_drop:      "Drop chapter pages here",
-    upload_or_click:  "or click to choose files (jpg, png, webp)",
+    upload_or_click:  "or click to choose files (jpg, png, webp, zip, cbz)",
+    upload_loading_archive: "Uploading archive: %1",
     cfg_lang:         "Translation language",
     cfg_font:         "Font path",
     cfg_debug:        "Debug boxes on result",
@@ -588,6 +590,8 @@ const I18N = {
     page_of:          "Page %1 / %2",
     chars_count:      "%1 bubbles",
     pick_images:      "Please choose images",
+    btn_abort:        "Abort",
+    aborted_log:      "Translation aborted.",
     prompt_job_id:    "Enter job_id (visible while processing):",
     job_not_found:    "Could not load: %1",
     open_page_first:  "Open a page first",
@@ -608,7 +612,8 @@ const I18N = {
     tab_editor:       "Редактор",
     tab_characters:   "Персонажи",
     upload_drop:      "Перетащите страницы главы сюда",
-    upload_or_click:  "или нажмите чтобы выбрать файлы (jpg, png, webp)",
+    upload_or_click:  "или нажмите чтобы выбрать файлы (jpg, png, webp, zip, cbz)",
+    upload_loading_archive: "Загружаем архив: %1",
     cfg_lang:         "Язык перевода",
     cfg_font:         "Путь к шрифту",
     cfg_debug:        "Дебаг-рамки на результате",
@@ -673,6 +678,8 @@ const I18N = {
     page_of:          "Страница %1 / %2",
     chars_count:      "%1 баблов",
     pick_images:      "Выберите изображения",
+    btn_abort:        "Прервать",
+    aborted_log:      "Перевод прерван.",
     prompt_job_id:    "Введите job_id (виден во время обработки):",
     job_not_found:    "Не удалось загрузить: %1",
     open_page_first:  "Откройте страницу",
@@ -769,29 +776,40 @@ uploadZone.addEventListener('drop', e => {
 fileInput.onchange = () => startUpload(Array.from(fileInput.files));
 
 async function startUpload(files) {
-  files = files.filter(f => f.type.startsWith('image/'));
+  const isArchive = f => /\.(zip|cbz)$/i.test(f.name);
+  const archives = files.filter(isArchive);
+  const images   = files.filter(f => f.type.startsWith('image/'));
+
+  let archiveMode = false;
+  if (archives.length > 0) {
+    files = [archives[0]];   // only the first archive
+    archiveMode = true;
+  } else {
+    files = images;
+  }
+
   if (!files.length) { alert(t("pick_images")); return; }
 
-  // Natural sort by filename: page2 < page10 (the same logic as the backend uses)
-  files.sort((a, b) => naturalCompare(a.name, b.name));
-
-  // Pre-create skeleton cards immediately so user sees progress
+  // Reset shared state
   $('pages-grid').innerHTML = '';
   for (const key of Object.keys(processingCards)) delete processingCards[key];
-  currentJobPages = [];   // reset stale data from previous run
+  currentJobPages = [];
   currentEditPage = null;
-  // Export buttons are disabled until the job finishes
   $('btn-export-zip').disabled = true;
   $('btn-export-cbz').disabled = true;
 
-  // Read each file as data-URL for the blurred preview underneath the spinner
-  const previews = await Promise.all(files.map(readFileAsDataURL));
-  totalPagesGlobal = files.length;
-  files.forEach((file, idx) => {
-    const card = makeSkeletonCard(idx + 1, files.length, previews[idx], file.name);
-    processingCards[idx + 1] = card;
-    $('pages-grid').appendChild(card);
-  });
+  if (!archiveMode) {
+    // Natural sort by filename: page2 < page10 (same logic as backend)
+    files.sort((a, b) => naturalCompare(a.name, b.name));
+    // Pre-create skeleton cards with blurred preview images
+    const previews = await Promise.all(files.map(readFileAsDataURL));
+    totalPagesGlobal = files.length;
+    files.forEach((file, idx) => {
+      const card = makeSkeletonCard(idx + 1, files.length, previews[idx], file.name);
+      processingCards[idx + 1] = card;
+      $('pages-grid').appendChild(card);
+    });
+  }
 
   const form = new FormData();
   for (const f of files) form.append('files', f);
@@ -803,7 +821,7 @@ async function startUpload(files) {
   form.append('fast_mode', $('cfg-fast-mode').checked ? 'true' : 'false');
   form.append('mask_debug', $('cfg-mask-debug').checked ? 'true' : 'false');
 
-  log(t("upload_loading", files.length));
+  log(archiveMode ? t("upload_loading_archive", files[0].name) : t("upload_loading", files.length));
   $('progress-wrap').style.display = 'block';
 
   try {
@@ -814,6 +832,20 @@ async function startUpload(files) {
     $('job-id-display').textContent = data.job_id;
     $('job-id-pill').classList.add('visible');
     log(t("upload_done", data.job_id, data.total_pages), 'ok');
+
+    if (archiveMode) {
+      // Page count and filenames are known only after extraction
+      totalPagesGlobal = data.total_pages;
+      const filenames = data.filenames || [];
+      for (let i = 1; i <= data.total_pages; i++) {
+        const fname = filenames[i - 1] || `page ${i}`;
+        const previewUrl = `/files/uploads/${data.job_id}/${encodeURIComponent(fname)}`;
+        const card = makeSkeletonCard(i, data.total_pages, previewUrl, fname);
+        processingCards[i] = card;
+        $('pages-grid').appendChild(card);
+      }
+    }
+
     openWebSocket(data.job_id, data.total_pages);
   } catch (e) {
     log(t("upload_error", e.message), 'err');
@@ -873,6 +905,7 @@ function setCardStage(pageNum, stageKey) {
 //═════════════════════════════════════════════════════════════════════
 
 function openWebSocket(jobId, total) {
+  $('btn-abort').style.display = 'inline-block';
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws/${jobId}`);
   ws.onopen = () => {
@@ -884,8 +917,42 @@ function openWebSocket(jobId, total) {
   };
   ws.onmessage = ev => handleEvent(JSON.parse(ev.data), total);
   ws.onerror = () => log(t("ws_error"), 'err');
-  ws.onclose = () => log(t("ws_closed"));
+  ws.onclose = () => {
+    $('btn-abort').style.display = 'none';
+    log(t("ws_closed"));
+  };
 }
+
+$('btn-abort').onclick = async () => {
+  if (!currentJobId) return;
+  $('btn-abort').disabled = true;
+  try { await fetch(`/api/job/${currentJobId}/abort`, { method: 'POST' }); } catch (_) {}
+  if (ws) { ws.close(); ws = null; }
+
+  // Translate tab — очищаем карточки и прогресс, лог оставляем
+  $('pages-grid').innerHTML = '';
+  for (const key of Object.keys(processingCards)) delete processingCards[key];
+  $('progress-fill').style.width = '0%';
+  $('progress-text').textContent = '';
+  $('progress-time').textContent = '';
+
+  // Editor tab — сбрасываем содержимое
+  $('editor-page-select').innerHTML = '';
+  $('editor-image').innerHTML   = `<div class="empty">${t("editor_empty")}</div>`;
+  $('editor-original').innerHTML = `<div class="empty">${t("editor_empty")}</div>`;
+  $('editor-side').innerHTML    = `<div class="empty">${t("editor_side_empty")}</div>`;
+
+  // Job pill
+  $('job-id-pill').classList.remove('visible');
+  $('job-id-display').textContent = '';
+
+  currentJobPages = [];
+  currentEditPage = null;
+  currentJobId = null;
+  $('btn-abort').disabled = false;
+  $('btn-abort').style.display = 'none';
+  log(t("aborted_log"), 'warn');
+};
 
 function handleEvent(evt, total) {
   if (evt.type === 'start') {
@@ -917,6 +984,10 @@ function handleEvent(evt, total) {
     replaceCardWithResult(evt);
     // Activate next card as "detecting"
     if (processingCards[evt.page + 1]) setCardStage(evt.page + 1, "stage_detect");
+
+    // Обновляем список страниц в редакторе; при первой странице — открываем её
+    populatePageSelect();
+    if (!currentEditPage) openEditPage(currentJobPages[0].page);
   } else if (evt.type === 'finish') {
     $('progress-fill').style.width = '100%';
     $('progress-text').textContent = t("finished_label");
@@ -1108,6 +1179,23 @@ $('btn-rerender').onclick = async () => {
     btn.disabled = false; btn.textContent = t("editor_rerender");
   }
 };
+
+// Arrow-key navigation in the Editor tab
+document.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  // Ignore when focus is inside a text field / textarea
+  const tag = (document.activeElement || {}).tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  // Ignore when editor panel is not active
+  if (!document.getElementById('panel-editor').classList.contains('active')) return;
+  if (!currentJobPages.length || !currentEditPage) return;
+  const idx = currentJobPages.findIndex(p => p.page === currentEditPage.page);
+  if (idx === -1) return;
+  const next = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
+  if (next < 0 || next >= currentJobPages.length) return;
+  e.preventDefault();
+  openEditPage(currentJobPages[next].page);
+});
 
 //═════════════════════════════════════════════════════════════════════
 // characters

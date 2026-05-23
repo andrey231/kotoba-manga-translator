@@ -8,12 +8,15 @@ web.py
 Откройте http://localhost:8000 в браузере.
 """
 
+import io
 import os
 import json
 import shutil
 import asyncio
 import tempfile
+import threading
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -233,11 +236,22 @@ async def upload_chapter(
 
     for f in files:
         ext = Path(f.filename).suffix.lower()
-        if ext not in mt.SUPPORTED_EXTENSIONS:
-            continue
-        target = upload_dir / f.filename
-        with open(target, "wb") as out:
-            shutil.copyfileobj(f.file, out)
+        if ext in {'.zip', '.cbz'}:
+            data = await f.read()
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for entry in sorted(zf.infolist(), key=lambda e: e.filename):
+                    if entry.is_dir():
+                        continue
+                    name = Path(entry.filename).name
+                    if name.startswith('._') or entry.filename.startswith('__MACOSX'):
+                        continue
+                    if Path(name).suffix.lower() not in mt.SUPPORTED_EXTENSIONS:
+                        continue
+                    (upload_dir / name).write_bytes(zf.read(entry))
+        elif ext in mt.SUPPORTED_EXTENSIONS:
+            target = upload_dir / f.filename
+            with open(target, "wb") as out:
+                shutil.copyfileobj(f.file, out)
 
     saved = sorted(upload_dir.iterdir(), key=lambda p: mt.natural_key(p.name))
     if not saved:
@@ -259,8 +273,9 @@ async def upload_chapter(
         "pages": [],
         "stats": None,
         "queue": asyncio.Queue(),
+        "cancel_event": threading.Event(),
     }
-    return {"job_id": job_id, "total_pages": len(saved)}
+    return {"job_id": job_id, "total_pages": len(saved), "filenames": [p.name for p in saved]}
 
 
 # ─── запуск перевода и WebSocket прогресс ────────────────────────────────────
@@ -376,6 +391,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             on_page_done=on_page_done,
             on_finish=on_finish,
             on_stage=on_stage,
+            cancel_event=job["cancel_event"],
         )
 
     runner_task: Optional[asyncio.Task] = None
@@ -408,11 +424,24 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 if event.get("type") == "finish":
                     break
     except WebSocketDisconnect:
-        pass
+        # Клиент отключился (закрыл вкладку или нажал Abort) — останавливаем перевод
+        job["cancel_event"].set()
     finally:
         if runner_task and not runner_task.done():
-            # Даём джобу довыполниться в фоне — он сам зачистит state
+            # Даём текущей странице дообработаться, cancel_event остановит следующую
             pass
+
+
+# ─── отмена джоба ────────────────────────────────────────────────────────────
+
+@app.post("/api/job/{job_id}/abort")
+async def abort_job(job_id: str):
+    """Устанавливает cancel_event — перевод остановится после текущей страницы."""
+    if job_id not in JOBS:
+        raise HTTPException(404, "Job not found")
+    JOBS[job_id]["cancel_event"].set()
+    JOBS[job_id]["status"] = "cancelled"
+    return {"ok": True}
 
 
 # ─── редактор: правка переводов ──────────────────────────────────────────────
