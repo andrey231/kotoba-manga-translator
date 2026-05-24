@@ -2228,41 +2228,103 @@ def _effective_box(bx: int, by: int, bw: int, bh: int,
     return ex, ey, ew, eh
 
 
+def _find_font_variant(base_path: str | None, bold: bool, italic: bool) -> str | None:
+    """Returns path to bold/italic variant of base_path, or None if not found."""
+    if not base_path:
+        return None
+    stem, ext = os.path.splitext(base_path)
+    dir_ = os.path.dirname(base_path)
+    name_only = os.path.basename(stem)
+    base_no_ext = os.path.join(dir_, name_only) if dir_ else name_only
+    if bold and italic:
+        suffixes = ["bi", "BI", "BoldItalic", "Bold-Italic", "bolditalic"]
+    elif bold:
+        suffixes = ["bd", "BD", "b", "Bold", "-Bold", "bold", "B"]
+    else:
+        suffixes = ["i", "I", "Italic", "-Italic", "italic"]
+    for s in suffixes:
+        for path in (f"{stem}{s}{ext}", f"{base_no_ext}{s}{ext}"):
+            try:
+                ImageFont.truetype(path, 12)
+                return path
+            except OSError:
+                pass
+    return None
+
+
 def _render_text_block(text: str, box_w: int, box_h: int,
                         color: tuple, font_path: str | None = None,
-                        font_size_override: int | None = None) -> Image.Image:
+                        font_size_override: int | None = None,
+                        text_align: str = "center",
+                        bold: bool = False, italic: bool = False,
+                        underline: bool = False,
+                        outline_color: tuple | None = None,
+                        outline_width: int = 0) -> Image.Image:
     """
     Рендерит текст в прозрачный RGBA-блок размером box_w × box_h.
-    Возвращает PIL.Image — её можно вращать и накладывать на инпейтнутую страницу.
-
-    Если font_size_override указан — используем точно этот размер шрифта,
-    без бинарного поиска (для пользовательских настроек из редактора).
-    Текст всё равно переносится по ширине, но размер не подбирается.
+    Поддерживает выравнивание (left/center/right), жирный/курсив/подчёркнутый,
+    а также цветной контур (outline_color + outline_width).
     """
     img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
+    # Определяем эффективный путь к шрифту с учётом bold/italic
+    eff_font = font_path
+    sim_bold = False  # симуляция bold через stroke когда нет отдельного файла
+    if bold or italic:
+        variant = _find_font_variant(font_path or DEFAULT_FONT, bold, italic)
+        if variant:
+            eff_font = variant
+        elif bold:
+            sim_bold = True
+
     if font_size_override:
         font, lines, line_heights, spacing = _fit_at_exact_size(
-            draw, text, box_w, box_h, font_path, int(font_size_override)
+            draw, text, box_w, box_h, eff_font, int(font_size_override)
         )
     else:
         font, lines, line_heights, spacing = fit_text_in_box(
-            draw, text, box_w, box_h, font_path
+            draw, text, box_w, box_h, eff_font
         )
-    # Padding должен совпадать с padding в fit_text_in_box / _fit_at_exact_size
-    # (там используется 6 для безопасности descender'ов)
+
     padding = 6
     total_h = sum(line_heights) + spacing * (len(lines) - 1)
     text_y = padding + max(0, (box_h - padding * 2 - total_h) // 2)
 
     rgba_color = (color[0], color[1], color[2], 255)
+
+    # Stroke: явный контур имеет приоритет над симуляцией bold
+    if outline_color and outline_width > 0:
+        stroke_fill: tuple | None = (outline_color[0], outline_color[1], outline_color[2], 255)
+        stroke_w = outline_width
+    elif sim_bold:
+        stroke_fill = rgba_color
+        stroke_w = 1
+    else:
+        stroke_fill = None
+        stroke_w = 0
+
     for j, line in enumerate(lines):
         bb = draw.textbbox((0, 0), line, font=font)
         line_w = bb[2] - bb[0]
-        text_x = padding + max(0, (box_w - padding * 2 - line_w) // 2)
-        text_x = min(text_x, box_w - padding - line_w)
-        draw.text((text_x, text_y), line, fill=rgba_color, font=font)
+
+        if text_align == "left":
+            text_x = padding
+        elif text_align == "right":
+            text_x = max(padding, box_w - padding - line_w)
+        else:  # center
+            text_x = padding + max(0, (box_w - padding * 2 - line_w) // 2)
+            text_x = min(text_x, box_w - padding - line_w)
+
+        draw.text((text_x, text_y), line, fill=rgba_color, font=font,
+                  stroke_fill=stroke_fill, stroke_width=stroke_w)
+
+        if underline and line.strip():
+            ascent, _ = font.getmetrics()
+            uy = text_y + ascent + 1
+            thickness = max(1, font.size // 14)
+            draw.rectangle([text_x, uy, text_x + line_w, uy + thickness], fill=rgba_color)
+
         text_y += line_heights[j] + spacing
 
     return img
@@ -2347,7 +2409,12 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
     """
     # 1. Маски текста через Comic Text Detector (один проход на страницу)
     print("  Segmenting text regions (CTD)...")
+    # Сохраняем углы, заданные пользователем в редакторе — CTD их перезапишет
+    _user_angles = {id(b): b["_text_angle"] for b in bubbles if "_text_angle" in b}
     _compute_text_masks(img_cv, bubbles, page_name=page_name)
+    for b in bubbles:
+        if id(b) in _user_angles:
+            b["_text_angle"] = _user_angles[id(b)]
 
     # 2. Определяем цвет текста ДО того как сотрём оригинал
     for b in bubbles:
@@ -2393,31 +2460,46 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
                 text_angle = 0.0
                 print(f"  [jp→ru] bubble {i+1} angle={b['_text_angle']:.0f}° japanese → render horizontal")
 
+        # Параметры стиля из редактора
+        text_align = b.get("text_align", "center") or "center"
+        b_bold     = bool(b.get("bold", False))
+        b_italic   = bool(b.get("italic", False))
+        b_underline = bool(b.get("underline", False))
+        raw_oc     = b.get("outline_color")
+        b_outline_color = tuple(raw_oc) if raw_oc else None
+        b_outline_width = int(b.get("outline_width", 0) or 0)
+
+        _style = dict(
+            font_path=b.get("font_path"),
+            font_size_override=b.get("font_size"),
+            text_align=text_align,
+            bold=b_bold, italic=b_italic, underline=b_underline,
+            outline_color=b_outline_color, outline_width=b_outline_width,
+        )
+
         if abs(text_angle) > 45:
             # Вертикальный текст: рендерим «горизонтально» с переставленными
             # размерами, затем поворачиваем на ±90° — читается сверху вниз.
             rot_deg = -90 if text_angle > 0 else 90
-            block = _render_text_block(
-                translation, eh, ew, color,
-                font_path=b.get("font_path"),
-                font_size_override=b.get("font_size"),
-            )
-            block = block.rotate(rot_deg, expand=True)
-        elif abs(text_angle) > 15:
-            # Наклонный текст: рендерим в номинальных размерах, поворачиваем.
-            block = _render_text_block(
-                translation, ew, eh, color,
-                font_path=b.get("font_path"),
-                font_size_override=b.get("font_size"),
-            )
-            block = block.rotate(-text_angle, expand=True)
+            block = _render_text_block(translation, eh, ew, color, **_style)
+            # BICUBIC — лучшее что поддерживает rotate(); LANCZOS там недоступен
+            block = block.rotate(rot_deg, expand=True,
+                                 resample=Image.Resampling.BICUBIC)
+        elif abs(text_angle) > 1:
+            # Наклонный текст: рендерим в 2× разрешении (суперсэмплинг),
+            # поворачиваем с BICUBIC, затем уменьшаем с LANCZOS — убирает ступенчатость.
+            SS = 2
+            big = _render_text_block(translation, ew * SS, eh * SS, color, **_style)
+            big = big.rotate(-text_angle, expand=True,
+                             resample=Image.Resampling.BICUBIC)
+            bw_big, bh_big = big.size
+            cx = max(0, (bw_big - ew * SS) // 2)
+            cy = max(0, (bh_big - eh * SS) // 2)
+            big = big.crop((cx, cy, cx + ew * SS, cy + eh * SS))
+            block = big.resize((ew, eh), Image.Resampling.LANCZOS)
         else:
             # Горизонтальный текст — без поворота.
-            block = _render_text_block(
-                translation, ew, eh, color,
-                font_path=b.get("font_path"),
-                font_size_override=b.get("font_size"),
-            )
+            block = _render_text_block(translation, ew, eh, color, **_style)
 
         # Обрезаем до размеров effective-бокса (центрирование) — блок не вылазит.
         bw_r, bh_r = block.size
@@ -2682,32 +2764,48 @@ def process_directory(input_dir: str, output_dir: str = "results",
     # Проверяем шрифт. Если указан — используем его. Если нет — пробуем
     # типичные манга-friendly шрифты по очереди, отдавая предпочтение жирным.
     def _resolve_font(requested: str) -> str | None:
-        """Возвращает рабочий путьGТепеweТеУУCЫ к шрифту или None."""
+        """Возвращает рабочий путь к шрифту или None."""
         # 1. Сначала пробуем то что запросил пользователь
         try:
             ImageFont.truetype(requested, 12)
             return requested
         except OSError:
             pass
-        # 2. Кандидаты в порядке предпочтения. Жирные манга-шрифты сверху,
-        #    затем системные жирные fallback'и, в конце обычные.
+        # 2. Кандидаты в порядке предпочтения. Манга-шрифты сверху, потом системные.
         candidates = [
             "Ace 2.0 BB Cyr.ttf", "animeace2_bld.ttf", "animeace2_reg.ttf",
             "CCWildWords.ttf", "wildwords.ttf",
-            "arialbd.ttf",    # Arial Bold — есть на каждой Windows
-            "ARIALBD.TTF",
-            "calibrib.ttf",   # Calibri Bold
-            "verdanab.ttf",   # Verdana Bold
-            "DejaVuSans-Bold.ttf",
-            "arial.ttf",      # Final fallback
+            # Windows
+            "arialbd.ttf", "ARIALBD.TTF", "calibrib.ttf", "verdanab.ttf",
+            # Linux (DejaVu широко доступен)
+            "DejaVuSans-Bold.ttf", "DejaVuSans.ttf",
+            # macOS / Windows fallback
+            "arial.ttf",
         ]
-        # Также пробуем стандартные пути к шрифтам Windows
-        win_fonts = "C:/Windows/Fonts/"
-        if os.path.isdir(win_fonts):
-            candidates = candidates + [
-                os.path.join(win_fonts, name) for name in os.listdir(win_fonts)
-                if any(kw in name.lower() for kw in ("bold", "bd", "black", "heavy"))
-            ][:5]
+        # 3. Системные папки шрифтов для текущей ОС
+        if os.name == "nt":
+            sys_dirs = ["C:/Windows/Fonts"]
+            local = os.environ.get("LOCALAPPDATA", "")
+            if local:
+                sys_dirs.append(os.path.join(local, "Microsoft", "Windows", "Fonts"))
+        else:
+            sys_dirs = [
+                "/usr/share/fonts", "/usr/local/share/fonts",
+                os.path.expanduser("~/.fonts"),
+                os.path.expanduser("~/.local/share/fonts"),
+                "/Library/Fonts", "/System/Library/Fonts",
+                os.path.expanduser("~/Library/Fonts"),
+            ]
+        bold_kw = ("bold", "bd", "black", "heavy")
+        for d in sys_dirs:
+            if not os.path.isdir(d):
+                continue
+            for root, _, files in os.walk(d):
+                for name in files:
+                    if any(kw in name.lower() for kw in bold_kw):
+                        candidates.append(os.path.join(root, name))
+                break  # не рекурсируем глубже одного уровня — достаточно для скорости
+
         for cand in candidates:
             try:
                 ImageFont.truetype(cand, 12)

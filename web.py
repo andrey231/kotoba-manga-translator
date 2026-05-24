@@ -187,6 +187,64 @@ async def list_models():
     }
 
 
+def _system_font_dirs() -> list[str]:
+    """Возвращает список папок с шрифтами для текущей ОС."""
+    dirs: list[str] = []
+    if os.name == "nt":  # Windows
+        dirs.append("C:/Windows/Fonts")
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            dirs.append(os.path.join(local, "Microsoft", "Windows", "Fonts"))
+    else:
+        # Linux
+        dirs += [
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            os.path.expanduser("~/.fonts"),
+            os.path.expanduser("~/.local/share/fonts"),
+        ]
+        # macOS
+        dirs += [
+            "/Library/Fonts",
+            "/System/Library/Fonts",
+            os.path.expanduser("~/Library/Fonts"),
+        ]
+    # Своя папка проекта — для кастомных шрифтов рядом с проектом
+    dirs.append(str(Path.cwd()))
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+@app.get("/api/fonts")
+async def list_fonts():
+    """Сканирует системные папки шрифтов и возвращает список {file, path, family, style, display}."""
+    from PIL import ImageFont
+
+    fonts: list[dict] = []
+    seen: set[str] = set()
+    for root_dir in _system_font_dirs():
+        # os.walk — рекурсивно, нужно для Linux где шрифты в подпапках
+        # (/usr/share/fonts/truetype/dejavu/, /usr/share/fonts/opentype/... и т.д.)
+        for dirpath, _, filenames in os.walk(root_dir):
+            for fname in filenames:
+                if not fname.lower().endswith((".ttf", ".otf")):
+                    continue
+                path = os.path.join(dirpath, fname)
+                if path in seen:
+                    continue
+                seen.add(path)
+                try:
+                    pil_font = ImageFont.truetype(path, 12)
+                    family, style = pil_font.getname()
+                    label = f"{family} {style}" if style not in ("Regular", "") else family
+                    fonts.append({"file": fname, "path": path,
+                                  "family": family, "style": style, "display": label})
+                except Exception:
+                    pass
+
+    fonts.sort(key=lambda f: f["display"].lower())
+    return {"fonts": fonts}
+
+
 @app.get("/api/models/debug")
 async def debug_models():
     """
@@ -324,6 +382,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     "idx": i + 1,
                     "x": b.get("x"), "y": b.get("y"),
                     "w": b.get("width"), "h": b.get("height"),
+                    "orig_w": b.get("width"), "orig_h": b.get("height"),
                     "text": b.get("text", ""),
                     "translation": b.get("translation", ""),
                     "speaker": b.get("speaker", "unknown"),
@@ -332,6 +391,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     "font_size": b.get("font_size"),    # per-bubble override (None = auto-fit)
                     "text_color": list(b["_text_color"]) if b.get("_text_color") else None,
                     "class": b.get("class", "text_bubble"),
+                    "_text_angle": b.get("_text_angle", 0.0),
                 }
                 for i, b in enumerate(bubbles)
             ],
@@ -470,7 +530,7 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     if not page:
         raise HTTPException(404, "Page not found")
 
-    # Применяем обновления баблов (translation, font_path, font_size).
+    # Применяем обновления баблов (translation, font_path, font_size и стили).
     # Только указанные в payload поля затрагиваются — остальные сохраняются.
     updates = {b["idx"]: b for b in payload.get("bubbles", []) if "idx" in b}
     for b in page["bubbles"]:
@@ -479,15 +539,38 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
             if "translation" in u:
                 b["translation"] = u.get("translation") or ""
             if "font_path" in u:
-                # None или пустая строка — сбрасываем override
                 b["font_path"] = u["font_path"] if u["font_path"] else None
             if "font_size" in u:
                 b["font_size"] = u["font_size"] if u["font_size"] else None
             if "text_color" in u:
-                # Hex "#rrggbb" → (r, g, b) tuple
                 hex_color = (u["text_color"] or "").lstrip("#")
                 if len(hex_color) == 6:
                     b["text_color"] = [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
+            if "outline_color" in u:
+                hex_oc = (u.get("outline_color") or "").lstrip("#")
+                b["outline_color"] = [int(hex_oc[i:i+2], 16) for i in (0, 2, 4)] if len(hex_oc) == 6 else None
+            if "outline_width" in u:
+                b["outline_width"] = int(u.get("outline_width") or 0)
+            for flag in ("bold", "italic", "underline"):
+                if flag in u:
+                    b[flag] = bool(u[flag])
+            if "text_align" in u:
+                b["text_align"] = u.get("text_align") or "center"
+            if "text_angle" in u:
+                b["_text_angle"] = float(u.get("text_angle") or 0)
+            if any(k in u for k in ("box_cx", "box_cy", "box_sw", "box_sh")):
+                cx = float(u.get("box_cx", b["x"] + b["w"] / 2))
+                cy = float(u.get("box_cy", b["y"] + b["h"] / 2))
+                sw = max(0.05, float(u.get("box_sw") or 1.0))
+                sh = max(0.05, float(u.get("box_sh") or 1.0))
+                base_w = b.get("orig_w") or b["w"]
+                base_h = b.get("orig_h") or b["h"]
+                nw = max(4, round(base_w * sw))
+                nh = max(4, round(base_h * sh))
+                b["x"] = max(0, round(cx - nw / 2))
+                b["y"] = max(0, round(cy - nh / 2))
+                b["w"] = nw
+                b["h"] = nh
 
     # Перерисовываем страницу
     upload_dir = UPLOADS_DIR / job_id
@@ -508,14 +591,19 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
             "width": b["w"], "height": b["h"],
             "text": b.get("text", ""),
             "translation": b.get("translation", ""),
-            "class": "text_bubble",   # для цвета рамки, влияет только в debug
             "speaker": b.get("speaker", ""),
             "gender": b.get("gender", ""),
-            # Per-bubble overrides — могут быть None
             "font_path": b.get("font_path"),
             "font_size": b.get("font_size"),
             "_text_color": tuple(b["text_color"]) if b.get("text_color") else None,
             "class": b.get("class", "text_bubble"),
+            "bold": b.get("bold", False),
+            "italic": b.get("italic", False),
+            "underline": b.get("underline", False),
+            "text_align": b.get("text_align", "center"),
+            "outline_color": b.get("outline_color"),
+            "outline_width": b.get("outline_width", 0),
+            "_text_angle": b.get("_text_angle", 0.0),
         }
         for b in page["bubbles"]
     ]

@@ -33,7 +33,7 @@
     font-size: 12px; color: #999; transition: all 0.15s;
   }
   .lang-btn.active { background: #2a4d7a; color: #fff; }
-  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+  main { padding: 24px; max-width: 1680px; margin: 0 auto; }
   .panel { display: none; }
   .panel.active { display: block; }
 
@@ -54,14 +54,35 @@
     grid-template-columns: 1fr 1fr; gap: 16px;
     background: #222; padding: 20px; border-radius: 12px;
   }
-  .config label { display: block; font-size: 12px; color: #999; margin-bottom: 6px; }
+  /* Каждая ячейка — колонка; input/select прижат к низу независимо от высоты лейбла */
+  .config > div { display: flex; flex-direction: column; }
+  .config label { display: flex; align-items: center; font-size: 12px; color: #999; margin-bottom: 6px; min-height: 20px; }
   .config input, .config select {
     width: 100%; padding: 8px 10px;
     background: #1a1a1a; border: 1px solid #444;
     color: #e0e0e0; border-radius: 6px; font-size: 14px;
+    margin-top: auto;
   }
+  /* Убираем родной стиль у select и ставим тот же шеврон что у font-btn */
+  .config select {
+    padding-right: 32px;
+    -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' stroke='%23aaa' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 8px;
+  }
+  /* Font picker кнопка в блоке конфига — тот же размер что и select */
+  .config #cfg-font-container { margin-top: 0; }
+  .config .font-select-btn {
+    padding: 8px 32px 8px 10px; font-size: 14px;
+    background-color: #1a1a1a;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' stroke='%23aaa' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 8px;
+    border: 1px solid #444; color: #e0e0e0; border-radius: 6px;
+    width: 100%; text-align: left; cursor: pointer;
+  }
+  .config .font-select-btn:hover { background-color: #252525; }
   .config .checkbox { display: flex; align-items: center; gap: 8px; }
-  .config .checkbox input { width: auto; }
+  .config .checkbox input { width: auto; margin-top: 0; }
 
   button {
     padding: 10px 20px; background: #2a4d7a;
@@ -162,7 +183,7 @@
 
   /* Editor */
   .editor-layout {
-    display: grid; grid-template-columns: 1fr 300px; gap: 24px;
+    display: grid; grid-template-columns: 1fr 390px; gap: 24px;
     align-items: start;
   }
   .editor-main {
@@ -222,6 +243,80 @@
     width: 64px;
     background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;
     border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  /* Font searchable dropdown */
+  .font-select-wrapper { flex: 1; min-width: 110px; position: relative; }
+  .font-select-btn {
+    width: 100%; text-align: left; padding: 4px 8px;
+    background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;
+    border-radius: 4px; font-size: 12px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .font-select-btn:hover { background-color: #3a3a3a; }
+  #font-dropdown-global {
+    position: fixed; z-index: 9999;
+    background: #1a1a1a; border: 1px solid #555; border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.7);
+    display: none; flex-direction: column; min-width: 220px; max-width: 360px;
+  }
+  #font-dropdown-global.open { display: flex; }
+  .font-dropdown-search {
+    padding: 7px 10px; background: #222;
+    border: none; border-bottom: 1px solid #444; color: #e0e0e0;
+    font-size: 13px; border-radius: 6px 6px 0 0; outline: none;
+    width: 100%; box-sizing: border-box;
+  }
+  .font-dropdown-list { overflow-y: auto; max-height: 240px; }
+  .font-option {
+    padding: 6px 12px; cursor: pointer; font-size: 12px; color: #ccc;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .font-option:hover, .font-option.hovered { background: #2a4d7a; color: #fff; }
+  .font-option.selected { color: #4a7fc0; font-weight: 500; }
+  .font-option.font-opt-default {
+    color: #888; font-style: italic; border-bottom: 1px solid #333; margin-bottom: 2px;
+  }
+
+  /* Second row: text-style toggles + align + outline */
+  .bubble-style-row2 {
+    display: flex; flex-direction: column; gap: 4px;
+    margin-top: 4px; width: 100%;
+  }
+  .bubble-style-row2a, .bubble-style-row2b {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .style-toggle {
+    padding: 2px 7px; background: #2a2a2a; border: 1px solid #444;
+    color: #aaa; border-radius: 4px; cursor: pointer; font-size: 12px;
+    line-height: 1.5; transition: all 0.12s; user-select: none;
+  }
+  .style-toggle:hover { background: #3a3a3a; color: #ddd; }
+  .style-toggle.active { background: #2a4d7a; border-color: #4a7fc0; color: #fff; }
+  .style-toggle.bold-btn { font-weight: bold; }
+  .style-toggle.italic-btn { font-style: italic; }
+  .style-toggle.underline-btn { text-decoration: underline; }
+  .style-sep { color: #555; padding: 0 2px; }
+  .outline-width-input {
+    width: 44px;
+    background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;
+    border-radius: 4px; padding: 3px 5px; font-size: 12px;
+  }
+  /* Selected bubble overlay on image */
+  .bubble-select-overlay {
+    position: absolute; display: none;
+    border: 2px solid #4a7fc0;
+    box-shadow: 0 0 0 1px rgba(74,127,192,0.3), inset 0 0 0 1px rgba(74,127,192,0.15);
+    pointer-events: none; box-sizing: border-box;
+    border-radius: 2px; transition: all 0.08s;
+  }
+  .bubble-item.selected { border-left-color: #4a7fc0; background: #1e2a3a; }
+  .bubble-style-box {
+    display: flex; align-items: center; gap: 4px; margin-top: 4px; flex-wrap: nowrap;
+  }
+  .bubble-style-box label { color: #888; margin: 0; font-size: 11px; white-space: nowrap; }
+  .bubble-style-box input[type="number"] {
+    width: 56px; padding: 2px 4px; font-size: 11px;
+    background: #2a2a2a; border: 1px solid #444; color: #e0e0e0; border-radius: 4px;
   }
   .editor-toolbar {
     display: flex; gap: 8px; justify-content: space-between;
@@ -384,9 +479,9 @@
     </div>
     <div>
       <label data-i18n="cfg_font">Font path</label>
-      <input id="cfg-font" value="arial.ttf">
+      <div id="cfg-font-container"></div>
     </div>
-    <div style="display:flex; gap:24px; flex-wrap:wrap; align-items:center;">
+    <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-start;">
       <div class="checkbox">
         <input type="checkbox" id="cfg-debug">
         <label for="cfg-debug" style="margin:0; font-size:14px;" data-i18n="cfg_debug">Debug boxes on result</label>
@@ -552,7 +647,11 @@ const I18N = {
     editor_font:      "Font:",
     editor_size:      "Size:",
     editor_color:     "Color:",
+    editor_outline:   "Outline:",
+    editor_angle:     "Angle:",
     editor_delete_bubble: "Clear translation (show original)",
+    font_default:     "(default)",
+    font_search:      "Search fonts...",
     editor_empty:     "Load or select a job to edit",
     editor_side_empty: "Bubbles will appear here",
     editor_label_original:   "Original",
@@ -642,7 +741,11 @@ const I18N = {
     editor_font:      "Шрифт:",
     editor_size:      "Размер:",
     editor_color:     "Цвет:",
+    editor_outline:   "Обводка:",
+    editor_angle:     "Угол:",
     editor_delete_bubble: "Убрать перевод (показать оригинал)",
+    font_default:     "(по умолчанию)",
+    font_search:      "Поиск шрифта...",
     editor_empty:     "Загрузите или выберите джоб для редактирования",
     editor_side_empty: "Баблы появятся здесь",
     editor_label_original:   "Оригинал",
@@ -1079,7 +1182,8 @@ function openEditPage(pageNum) {
   const origUrl = `/files/uploads/${currentJobId}/${page.filename}`;
   $('editor-original').innerHTML = `<img src="${origUrl}" alt="Original">`;
   $('editor-image').innerHTML =
-    `<img src="${page.url}?t=${Date.now()}" alt="Page">`;
+    `<img src="${page.url}?t=${Date.now()}" alt="Page" id="editor-img-main">` +
+    `<div class="bubble-select-overlay" id="bubble-select-overlay"></div>`;
 
   const side = $('editor-side');
   side.innerHTML = '';
@@ -1087,18 +1191,36 @@ function openEditPage(pageNum) {
     side.innerHTML = `<div class="empty">${t("no_bubbles")}</div>`;
     return;
   }
+
   page.bubbles.forEach(b => {
     const item = document.createElement('div');
     item.className = 'bubble-item';
+    item.dataset.bubbleIdx = b.idx;
+
     const fontVal = b.font_path || '';
     const sizeVal = b.font_size != null && b.font_size !== '' ? b.font_size : '';
-    // Convert stored color [r,g,b] or "#rrggbb" to hex for color input
+
+    // text_color: [r,g,b] array or hex string → #rrggbb
     let colorVal = '#000000';
     if (Array.isArray(b.text_color)) {
       colorVal = '#' + b.text_color.map(c => c.toString(16).padStart(2, '0')).join('');
     } else if (typeof b.text_color === 'string' && b.text_color.startsWith('#')) {
       colorVal = b.text_color;
     }
+
+    // outline_color: [r,g,b] array or null → #rrggbb
+    let outlineColorVal = '#ffffff';
+    if (Array.isArray(b.outline_color)) {
+      outlineColorVal = '#' + b.outline_color.map(c => c.toString(16).padStart(2, '0')).join('');
+    }
+    const outlineWidthVal = b.outline_width || 0;
+
+    // boolean style flags
+    const isBold      = !!b.bold;
+    const isItalic    = !!b.italic;
+    const isUnderline = !!b.underline;
+    const align       = b.text_align || 'center';
+
     item.innerHTML = `
       <div class="num">#${b.idx} ${b.speaker !== 'unknown' ? '— ' + escapeHtml(b.speaker) : ''}</div>
       <div class="speaker">${b.x},${b.y} • ${b.w}×${b.h} • ${b.gender}</div>
@@ -1106,22 +1228,98 @@ function openEditPage(pageNum) {
       <textarea data-idx="${b.idx}" data-field="translation">${escapeHtml(b.translation || '')}</textarea>
       <div class="bubble-style">
         <label data-i18n="editor_font">Font:</label>
-        <input type="text" class="bubble-font" data-idx="${b.idx}" data-field="font_path"
-               placeholder="(default)" value="${escapeHtml(fontVal)}">
+        <span class="font-select-anchor"></span>
         <label data-i18n="editor_size">Size:</label>
         <input type="number" class="bubble-size" data-idx="${b.idx}" data-field="font_size"
                placeholder="auto" min="6" max="120" value="${sizeVal}">
-        <label data-i18n="editor_color">Color:</label>
-        <input type="color" data-idx="${b.idx}" data-field="text_color" value="${colorVal}"
-               title="${t('editor_color')}">
-        <button type="button" class="btn-danger" style="padding:3px 8px; font-size:11px;"
-                data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
+        <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+          <label data-i18n="editor_color" style="margin:0;white-space:nowrap;">Color:</label>
+          <input type="color" data-idx="${b.idx}" data-field="text_color" value="${colorVal}"
+                 title="${t('editor_color')}">
+          <button type="button" class="btn-danger" style="padding:3px 8px; font-size:11px;"
+                  data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
+        </div>
+      </div>
+      <div class="bubble-style-row2">
+        <div class="bubble-style-row2a">
+          <button type="button" class="style-toggle bold-btn${isBold?' active':''}"
+                  data-idx="${b.idx}" data-field="bold" title="Bold">B</button>
+          <button type="button" class="style-toggle italic-btn${isItalic?' active':''}"
+                  data-idx="${b.idx}" data-field="italic" title="Italic">I</button>
+          <button type="button" class="style-toggle underline-btn${isUnderline?' active':''}"
+                  data-idx="${b.idx}" data-field="underline" title="Underline">U</button>
+          <span class="style-sep">│</span>
+          <button type="button" class="style-toggle align-btn${align==='left'?' active':''}"
+                  data-idx="${b.idx}" data-field="text_align" data-value="left" title="Align left">⬅</button>
+          <button type="button" class="style-toggle align-btn${align==='center'?' active':''}"
+                  data-idx="${b.idx}" data-field="text_align" data-value="center" title="Align center">≡</button>
+          <button type="button" class="style-toggle align-btn${align==='right'?' active':''}"
+                  data-idx="${b.idx}" data-field="text_align" data-value="right" title="Align right">➡</button>
+        </div>
+        <div class="bubble-style-row2b">
+          <label style="color:#888;font-size:11px;">${t('editor_outline')}</label>
+          <input type="color" data-idx="${b.idx}" data-field="outline_color"
+                 value="${outlineColorVal}" title="Outline color">
+          <input type="number" class="outline-width-input" data-idx="${b.idx}" data-field="outline_width"
+                 min="0" max="10" value="${outlineWidthVal}" title="Outline width (px)">
+          <span class="style-sep">│</span>
+          <label style="color:#888;font-size:11px;">${t('editor_angle')}</label>
+          <input type="number" class="outline-width-input" data-idx="${b.idx}" data-field="text_angle"
+                 min="-180" max="180" step="1" value="${Math.round(b._text_angle || 0)}"
+                 title="Угол поворота текста (°)" style="width:52px;">
+          <label style="color:#666;font-size:11px;">°</label>
+        </div>
+      </div>
+      <div class="bubble-style-box">
+        <label>Cx:</label>
+        <input type="number" data-idx="${b.idx}" data-field="box_cx" value="${Math.round(b.x + b.w/2)}" step="1" title="Центр X (пикс.)">
+        <label>Cy:</label>
+        <input type="number" data-idx="${b.idx}" data-field="box_cy" value="${Math.round(b.y + b.h/2)}" step="1" title="Центр Y (пикс.)">
+        <label>Sw:</label>
+        <input type="number" data-idx="${b.idx}" data-field="box_sw"
+               value="${b.orig_w ? (b.w/b.orig_w).toFixed(2) : '1.00'}"
+               data-orig-w="${b.orig_w || b.w}" min="0.05" step="0.05" title="Масштаб по ширине (1.0 = оригинал)">
+        <label>Sh:</label>
+        <input type="number" data-idx="${b.idx}" data-field="box_sh"
+               value="${b.orig_h ? (b.h/b.orig_h).toFixed(2) : '1.00'}"
+               data-orig-h="${b.orig_h || b.h}" min="0.05" step="0.05" title="Масштаб по высоте (1.0 = оригинал)">
       </div>
     `;
+    // Вставляем font-select вместо placeholder
+    item.querySelector('.font-select-anchor').replaceWith(makeFontSelect(b));
+
     side.appendChild(item);
+
+    // Click on bubble item → highlight on image
+    item.addEventListener('click', e => {
+      if (e.target.closest('button,input,textarea,select')) return;
+      selectBubble(item, b);
+    });
+
+    // Box inputs: focus → select; input → live overlay update
+    item.querySelectorAll('.bubble-style-box input').forEach(inp => {
+      inp.addEventListener('focus', () => selectBubble(item, b));
+      inp.addEventListener('input', () => {
+        if (item.classList.contains('selected')) refreshOverlay(b.idx);
+      });
+    });
   });
 
-  // Кнопки удаления — очищают перевод
+  // Toggle buttons: bold / italic / underline
+  side.querySelectorAll('.style-toggle[data-field="bold"], .style-toggle[data-field="italic"], .style-toggle[data-field="underline"]').forEach(btn => {
+    btn.onclick = () => btn.classList.toggle('active');
+  });
+
+  // Align buttons: only one active per bubble
+  side.querySelectorAll('.align-btn').forEach(btn => {
+    btn.onclick = () => {
+      const idx = btn.dataset.idx;
+      side.querySelectorAll(`.align-btn[data-idx="${idx}"]`).forEach(b2 => b2.classList.remove('active'));
+      btn.classList.add('active');
+    };
+  });
+
+  // Delete buttons — clear translation
   side.querySelectorAll('[data-delete-idx]').forEach(btn => {
     btn.onclick = () => {
       const idx = btn.dataset.deleteIdx;
@@ -1129,27 +1327,287 @@ function openEditPage(pageNum) {
       if (ta) ta.value = '';
     };
   });
+
   applyI18n();
 }
 
+function refreshOverlay(idx) {
+  const img = $('editor-img-main');
+  const overlay = $('bubble-select-overlay');
+  if (!img || !overlay || !img.naturalWidth) return;
+  const imgScale = img.clientWidth / img.naturalWidth;
+  const sel = f => document.querySelector(`#editor-side [data-field="${f}"][data-idx="${idx}"]`);
+  const getF = f => parseFloat(sel(f)?.value) || 0;
+  const cx = getF('box_cx');
+  const cy = getF('box_cy');
+  const sw = Math.max(0.05, getF('box_sw') || 1);
+  const sh = Math.max(0.05, getF('box_sh') || 1);
+  // Масштаб всегда от оригинального размера, хранящегося в data-атрибуте
+  const origW = parseFloat(sel('box_sw')?.dataset.origW) || 0;
+  const origH = parseFloat(sel('box_sh')?.dataset.origH) || 0;
+  const ew = Math.max(4, origW * sw);
+  const eh = Math.max(4, origH * sh);
+  overlay.style.display = 'block';
+  overlay.style.left   = Math.round((cx - ew / 2) * imgScale) + 'px';
+  overlay.style.top    = Math.round((cy - eh / 2) * imgScale) + 'px';
+  overlay.style.width  = Math.round(ew * imgScale) + 'px';
+  overlay.style.height = Math.round(eh * imgScale) + 'px';
+}
+
+function selectBubble(item, b) {
+  document.querySelectorAll('#editor-side .bubble-item').forEach(el => el.classList.remove('selected'));
+  item.classList.add('selected');
+
+  const img = $('editor-img-main');
+  if (!img) return;
+  if (img.complete && img.naturalWidth) {
+    refreshOverlay(b.idx);
+  } else {
+    img.onload = () => refreshOverlay(b.idx);
+  }
+}
+
+//═════════════════════════════════════════════════════════════════════
+// Font picker
+//═════════════════════════════════════════════════════════════════════
+
+let allFonts = [];
+let fontsLoaded = false;
+let fontsLoading = false;
+
+async function loadFonts() {
+  if (fontsLoaded || fontsLoading) return;
+  fontsLoading = true;
+  try {
+    const r = await fetch('/api/fonts');
+    const data = await r.json();
+    allFonts = data.fonts || [];
+    fontsLoaded = true;
+    updateFontBtnDisplays();   // обновляем кнопки которые показывали сырой путь
+  } catch (e) {
+    console.warn('Could not load fonts:', e);
+  } finally {
+    fontsLoading = false;
+  }
+}
+
+// Обновляет текст всех font-select кнопок с сырого пути на display-имя
+function updateFontBtnDisplays() {
+  document.querySelectorAll('.font-select-wrapper').forEach(wrapper => {
+    const hidden = wrapper.querySelector('input[type="hidden"]');
+    const btn    = wrapper.querySelector('.font-select-btn');
+    if (!hidden || !btn) return;
+    const path = hidden.value;
+    if (!path) { btn.textContent = t('font_default'); return; }
+    const found = allFonts.find(f => f.path === path);
+    if (found) { btn.textContent = found.display; btn.title = path; }
+  });
+}
+
+// Создаёт font-select в контейнере translate-вкладки (одно поле, не per-bubble)
+function initGlobalFontPicker(initialPath) {
+  const container = $('cfg-font-container');
+  if (!container) return;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'font-select-wrapper';
+  wrapper.style.width = '100%';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'font-select-btn';
+  btn.textContent = initialPath || t('font_default');
+  btn.title = initialPath || '';
+
+  const hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.id   = 'cfg-font';
+  hidden.value = initialPath || '';
+
+  btn.addEventListener('click', async e => {
+    e.stopPropagation();
+    if (activeFontBtn === btn) { closeFontDropdown(); return; }
+    openFontDropdown(btn, hidden);
+  });
+
+  wrapper.append(btn, hidden);
+  container.appendChild(wrapper);
+}
+
+// Single shared dropdown element (portal — appended to body to escape sidebar overflow)
+let fontDropEl = null;
+let activeFontBtn = null;
+let activeFontHidden = null;
+
+function _ensureFontDropdown() {
+  if (fontDropEl) return;
+  fontDropEl = document.createElement('div');
+  fontDropEl.id = 'font-dropdown-global';
+  fontDropEl.innerHTML =
+    `<input class="font-dropdown-search" type="text" placeholder="">` +
+    `<div class="font-dropdown-list"></div>`;
+  document.body.appendChild(fontDropEl);
+
+  fontDropEl.querySelector('.font-dropdown-search').addEventListener('input', e => {
+    _fillFontList(e.target.value);
+  });
+  // Prevent click inside dropdown from closing it
+  fontDropEl.addEventListener('mousedown', e => e.stopPropagation());
+}
+
+function _fillFontList(query) {
+  if (!fontDropEl) return;
+  const list = fontDropEl.querySelector('.font-dropdown-list');
+  list.innerHTML = '';
+  const currentPath = activeFontHidden ? activeFontHidden.value : '';
+
+  // Default option
+  const defOpt = document.createElement('div');
+  defOpt.className = 'font-option font-opt-default' + (currentPath === '' ? ' selected' : '');
+  defOpt.textContent = t('font_default');
+  defOpt.onmousedown = e => { e.preventDefault(); _pickFont('', t('font_default')); };
+  list.appendChild(defOpt);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q ? allFonts.filter(f => f.display.toLowerCase().includes(q) || f.family.toLowerCase().includes(q)) : allFonts;
+
+  filtered.forEach(font => {
+    const opt = document.createElement('div');
+    opt.className = 'font-option' + (font.path === currentPath ? ' selected' : '');
+    opt.textContent = font.display;
+    opt.title = font.path;
+    opt.onmousedown = e => { e.preventDefault(); _pickFont(font.path, font.display); };
+    list.appendChild(opt);
+  });
+
+  if (!filtered.length && q) {
+    const empty = document.createElement('div');
+    empty.className = 'font-option';
+    empty.style.color = '#666';
+    empty.textContent = '—';
+    list.appendChild(empty);
+  }
+}
+
+function _pickFont(path, display) {
+  if (activeFontHidden) {
+    activeFontHidden.value = path;
+    activeFontHidden.dispatchEvent(new Event('change')); // для wireConfigPersistence
+  }
+  if (activeFontBtn) {
+    activeFontBtn.textContent = display;
+    activeFontBtn.title = path;
+  }
+  closeFontDropdown();
+}
+
+function closeFontDropdown() {
+  if (fontDropEl) fontDropEl.classList.remove('open');
+  activeFontBtn = null;
+  activeFontHidden = null;
+}
+
+async function openFontDropdown(btn, hidden) {
+  _ensureFontDropdown();
+  await loadFonts();
+
+  // Update placeholder text after i18n is applied
+  fontDropEl.querySelector('.font-dropdown-search').placeholder = t('font_search');
+
+  activeFontBtn = btn;
+  activeFontHidden = hidden;
+
+  // Position below the button (fixed, escapes sidebar overflow)
+  const rect = btn.getBoundingClientRect();
+  fontDropEl.style.top  = (rect.bottom + 4) + 'px';
+  fontDropEl.style.left = rect.left + 'px';
+  fontDropEl.style.minWidth = Math.max(rect.width, 220) + 'px';
+  fontDropEl.querySelector('.font-dropdown-search').value = '';
+  _fillFontList('');
+  fontDropEl.classList.add('open');
+  fontDropEl.querySelector('.font-dropdown-search').focus();
+
+  // Scroll selected option into view
+  requestAnimationFrame(() => {
+    const sel = fontDropEl.querySelector('.font-option.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+// Close on click outside
+document.addEventListener('mousedown', () => closeFontDropdown());
+
+function makeFontSelect(b) {
+  const currentPath = b.font_path || '';
+  const currentDisplay = currentPath
+    ? (allFonts.find(f => f.path === currentPath)?.display || currentPath)
+    : t('font_default');
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'font-select-wrapper';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'font-select-btn';
+  btn.textContent = currentDisplay;
+  btn.title = currentPath;
+
+  // Hidden input is what btn-rerender reads
+  const hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.dataset.idx = b.idx;
+  hidden.dataset.field = 'font_path';
+  hidden.value = currentPath;
+
+  btn.addEventListener('click', async e => {
+    e.stopPropagation();
+    // Close if already open for this button
+    if (activeFontBtn === btn) { closeFontDropdown(); return; }
+    openFontDropdown(btn, hidden);
+  });
+
+  wrapper.append(btn, hidden);
+  return wrapper;
+}
+
+// Pre-load fonts in background so dropdown opens instantly
+loadFonts();
+
 $('btn-rerender').onclick = async () => {
   if (!currentEditPage) { alert(t("open_page_first")); return; }
-  // Собираем updates по idx — каждый бабл может иметь translation/font_path/font_size
+  // Собираем updates по idx — все поля каждого бабла
   const byIdx = {};
   document.querySelectorAll('#editor-side [data-idx]').forEach(el => {
     const idx = parseInt(el.dataset.idx);
     if (!byIdx[idx]) byIdx[idx] = { idx };
     const field = el.dataset.field;
+    if (!field) return;
     if (field === 'font_size') {
       const v = el.value.trim();
       byIdx[idx][field] = v === '' ? null : parseInt(v);
     } else if (field === 'font_path') {
       byIdx[idx][field] = el.value.trim() || null;
+    } else if (field === 'bold' || field === 'italic' || field === 'underline') {
+      byIdx[idx][field] = el.classList.contains('active');
+    } else if (field === 'text_align') {
+      if (el.classList.contains('active') && el.dataset.value) {
+        byIdx[idx]['text_align'] = el.dataset.value;
+      }
+    } else if (field === 'outline_width') {
+      byIdx[idx][field] = parseInt(el.value) || 0;
+    } else if (field === 'text_angle') {
+      byIdx[idx][field] = parseFloat(el.value) || 0;
+    } else if (field === 'box_cx' || field === 'box_cy') {
+      byIdx[idx][field] = parseFloat(el.value) || 0;
+    } else if (field === 'box_sw' || field === 'box_sh') {
+      byIdx[idx][field] = Math.max(0.05, parseFloat(el.value) || 1.0);
     } else {
       byIdx[idx][field] = el.value;
     }
   });
+  // Default text_align = center for bubbles where no align button was active
   const updates = Object.values(byIdx);
+  updates.forEach(u => { if (!u.text_align) u.text_align = 'center'; });
   const btn = $('btn-rerender');
   btn.disabled = true; btn.textContent = t("rerendering");
   try {
@@ -1166,13 +1624,35 @@ $('btn-rerender').onclick = async () => {
     updates.forEach(u => {
       const b = currentEditPage.bubbles.find(x => x.idx === u.idx);
       if (b) {
-        if ('translation' in u) b.translation = u.translation;
-        if ('font_path' in u) b.font_path = u.font_path;
-        if ('font_size' in u) b.font_size = u.font_size;
+        if ('translation'   in u) b.translation   = u.translation;
+        if ('font_path'     in u) b.font_path     = u.font_path;
+        if ('font_size'     in u) b.font_size     = u.font_size;
+        if ('bold'          in u) b.bold          = u.bold;
+        if ('italic'        in u) b.italic        = u.italic;
+        if ('underline'     in u) b.underline     = u.underline;
+        if ('text_align'    in u) b.text_align    = u.text_align;
+        if ('outline_color' in u) b.outline_color = u.outline_color;
+        if ('outline_width' in u) b.outline_width = u.outline_width;
+        if ('text_angle'    in u) b._text_angle   = u.text_angle;
+        if ('box_cx' in u || 'box_cy' in u || 'box_sw' in u || 'box_sh' in u) {
+          const cx = 'box_cx' in u ? u.box_cx : (b.x + b.w / 2);
+          const cy = 'box_cy' in u ? u.box_cy : (b.y + b.h / 2);
+          const sw = Math.max(0.05, 'box_sw' in u ? u.box_sw : 1.0);
+          const sh = Math.max(0.05, 'box_sh' in u ? u.box_sh : 1.0);
+          const baseW = b.orig_w || b.w;
+          const baseH = b.orig_h || b.h;
+          const nw = Math.max(4, Math.round(baseW * sw));
+          const nh = Math.max(4, Math.round(baseH * sh));
+          b.x = Math.max(0, Math.round(cx - nw / 2));
+          b.y = Math.max(0, Math.round(cy - nh / 2));
+          b.w = nw; b.h = nh;
+          // orig_w/orig_h не меняем — они всегда оригинальные
+        }
       }
     });
     $('editor-image').innerHTML =
-      `<img src="${data.url}?t=${Date.now()}" alt="Page">`;
+      `<img src="${data.url}?t=${Date.now()}" alt="Page" id="editor-img-main">` +
+      `<div class="bubble-select-overlay" id="bubble-select-overlay"></div>`;
   } catch (e) {
     alert(t("rerender_failed", e.message));
   } finally {
@@ -1323,6 +1803,8 @@ function escapeHtml(s) {
 
 // Initial render
 applyI18n();
+// Font picker создаём ДО restoreConfig, чтобы $('cfg-font') уже существовал
+initGlobalFontPicker('arial.ttf');
 loadModels();
 restoreConfig();
 wireConfigPersistence();
@@ -1337,7 +1819,13 @@ function restoreConfig() {
     $('cfg-lang').value = saved.target_lang;
   }
   if (saved.font_path) {
-    $('cfg-font').value = saved.font_path;
+    const fi = $('cfg-font');
+    if (fi) {
+      fi.value = saved.font_path;
+      // Обновляем текст кнопки; display-имя придёт после loadFonts
+      const btn = document.querySelector('#cfg-font-container .font-select-btn');
+      if (btn) { btn.textContent = saved.font_path; btn.title = saved.font_path; }
+    }
   }
   if (saved.debug) {
     $('cfg-debug').checked = !!saved.debug;
