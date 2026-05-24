@@ -63,24 +63,21 @@
     color: #e0e0e0; border-radius: 6px; font-size: 14px;
     margin-top: auto;
   }
-  /* Убираем родной стиль у select и ставим тот же шеврон что у font-btn */
-  .config select {
-    padding-right: 32px;
-    -webkit-appearance: none; appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' stroke='%23aaa' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 8px;
-  }
-  /* Font picker кнопка в блоке конфига — тот же размер что и select */
-  .config #cfg-font-container { margin-top: 0; }
+  /* Единый стиль для всех трёх дропдаун-контролов конфига */
+  .config select,
   .config .font-select-btn {
-    padding: 8px 32px 8px 10px; font-size: 14px;
+    padding: 8px 32px 8px 10px;
+    -webkit-appearance: none; appearance: none;
     background-color: #1a1a1a;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' stroke='%23aaa' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 8px;
-    border: 1px solid #444; color: #e0e0e0; border-radius: 6px;
-    width: 100%; text-align: left; cursor: pointer;
+    border: 1px solid #444; color: #e0e0e0; border-radius: 6px; font-size: 14px;
+    cursor: pointer; text-align: left; width: 100%;
+    transition: background-color 0.15s;
   }
+  .config select:hover,
   .config .font-select-btn:hover { background-color: #252525; }
+  .config #cfg-font-container { margin-top: 0; }
   .config .checkbox { display: flex; align-items: center; gap: 8px; }
   .config .checkbox input { width: auto; margin-top: 0; }
 
@@ -212,7 +209,15 @@
     background: #1a1a1a; border-radius: 6px;
     padding: 12px; margin-bottom: 10px;
     border-left: 3px solid #2a4d7a;
+    position: relative;
   }
+  .bubble-delete-btn {
+    position: absolute; top: 6px; right: 6px;
+    padding: 2px 7px; font-size: 11px; line-height: 1.4;
+    background: #802a2a; color: #fff; border: none; border-radius: 4px;
+    cursor: pointer;
+  }
+  .bubble-delete-btn:hover { background: #a03a3a; }
   .bubble-item .num { font-weight: 600; color: #4a7fc0; font-size: 12px; }
   .bubble-item .original {
     color: #777; font-size: 12px; margin: 6px 0;
@@ -414,6 +419,66 @@
     margin: 0 0 8px 0; font-size: 13px; color: #fff;
     font-weight: 500;
   }
+
+  /* ─── Settings panel ─── */
+  .settings-panel { max-width: 860px; }
+  .settings-section {
+    background: #222; border-radius: 12px;
+    padding: 20px 24px; margin-bottom: 20px;
+  }
+  .settings-section-title {
+    margin: 0 0 16px 0; font-size: 14px; font-weight: 600;
+    color: #4a9eda; text-transform: uppercase; letter-spacing: 0.05em;
+    padding-bottom: 10px; border-bottom: 1px solid #333;
+  }
+  .setting-row {
+    display: grid; grid-template-columns: 1fr 180px;
+    gap: 16px; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid #2a2a2a;
+  }
+  .setting-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .setting-label {
+    font-size: 14px; color: #e0e0e0; font-weight: 500;
+    display: block; margin-bottom: 3px;
+  }
+  .setting-desc {
+    font-size: 12px; color: #777; line-height: 1.4;
+  }
+  .setting-control { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .setting-control input[type="number"] {
+    width: 90px; padding: 7px 10px; font-size: 14px;
+    background: #1a1a1a; border: 1px solid #444;
+    color: #e0e0e0; border-radius: 6px;
+    transition: border-color 0.15s;
+  }
+  .setting-control input[type="number"]:focus { outline: none; border-color: #4a7fc0; }
+  .setting-control input[type="text"] {
+    width: 100%; padding: 7px 10px; font-size: 13px;
+    background: #1a1a1a; border: 1px solid #444;
+    color: #e0e0e0; border-radius: 6px;
+    transition: border-color 0.15s; font-family: monospace;
+  }
+  .setting-control input[type="text"]:focus { outline: none; border-color: #4a7fc0; }
+  .setting-row.setting-full { grid-template-columns: 1fr; }
+  .setting-row.setting-full .setting-control { justify-content: flex-start; margin-top: 6px; }
+  .setting-row.setting-full .setting-control input[type="text"] { width: 100%; max-width: 500px; }
+  .setting-default { font-size: 11px; color: #555; white-space: nowrap; }
+  .settings-reset-row { margin-top: 4px; }
+  .setting-checkbox-ctrl {
+    display: flex; justify-content: flex-end; align-items: center;
+  }
+  .setting-checkbox-ctrl input[type="checkbox"] {
+    width: 18px; height: 18px; cursor: pointer; accent-color: #4a7fc0;
+    flex-shrink: 0;
+  }
+  /* legend inside settings */
+  .sett-legend { margin-top: 6px; }
+  .sett-legend .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .sett-legend .swatch {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 2px solid; background: transparent; flex-shrink: 0;
+  }
+  .sett-legend .label { color: #888; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -424,6 +489,7 @@
     <div class="tab active" data-panel="translate"  data-i18n="tab_translate">Translate</div>
     <div class="tab" data-panel="editor"             data-i18n="tab_editor">Editor</div>
     <div class="tab" data-panel="characters"         data-i18n="tab_characters">Characters</div>
+    <div class="tab" data-panel="settings"           data-i18n="tab_settings">Settings</div>
   </div>
   <div class="job-id-pill" id="job-id-pill">
     <span class="job-label" data-i18n="job_id_label">Job ID:</span>
@@ -481,56 +547,14 @@
       <label data-i18n="cfg_font">Font path</label>
       <div id="cfg-font-container"></div>
     </div>
-    <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-start;">
-      <div class="checkbox">
-        <input type="checkbox" id="cfg-debug">
-        <label for="cfg-debug" style="margin:0; font-size:14px;" data-i18n="cfg_debug">Debug boxes on result</label>
-        <span class="help-icon" tabindex="0">?
-          <div class="tooltip">
-            <h4 data-i18n="legend_title">Box colors on result</h4>
-            <div class="legend-row">
-              <div class="swatch" style="border-color: #00c800;"></div>
-              <span class="label" data-i18n="legend_green">Green — text bubble translated successfully</span>
-            </div>
-            <div class="legend-row">
-              <div class="swatch" style="border-color: #0096ff;"></div>
-              <span class="label" data-i18n="legend_blue">Blue — free-floating text (SFX) translated</span>
-            </div>
-            <div class="legend-row">
-              <div class="swatch" style="border-color: #ff8c00;"></div>
-              <span class="label" data-i18n="legend_orange">Orange — OCR found text but translation failed</span>
-            </div>
-            <div class="legend-row">
-              <div class="swatch" style="border-color: #ff0000;"></div>
-              <span class="label" data-i18n="legend_red">Red — OCR returned no text</span>
-            </div>
-          </div>
-        </span>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="cfg-llm-debug">
-        <label for="cfg-llm-debug" style="margin:0; font-size:14px;" data-i18n="cfg_llm_debug">Verbose LLM logging (server console)</label>
-        <span class="help-icon" tabindex="0">?
-          <div class="tooltip">
-            <span data-i18n="cfg_llm_debug_help">When enabled, every prompt sent to the LLM and every response from it is printed to the server console. Useful for diagnosing translation issues. Slows things down and produces a lot of output.</span>
-          </div>
-        </span>
-      </div>
+    <div>
+      <label aria-hidden="true" style="visibility:hidden">&nbsp;</label>
       <div class="checkbox">
         <input type="checkbox" id="cfg-fast-mode">
         <label for="cfg-fast-mode" style="margin:0; font-size:14px;" data-i18n="cfg_fast_mode">Fast mode (no context)</label>
         <span class="help-icon" tabindex="0">?
           <div class="tooltip">
             <span data-i18n="cfg_fast_mode_help">Skip page analysis and speaker attribution. Saves 2-3 vision-LLM calls per page (~30-60 seconds), but bubbles are translated without scene context and the character archive is not updated. Useful for quick drafts.</span>
-          </div>
-        </span>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="cfg-mask-debug">
-        <label for="cfg-mask-debug" style="margin:0; font-size:14px;" data-i18n="cfg_mask_debug">Mask debug</label>
-        <span class="help-icon" tabindex="0">?
-          <div class="tooltip">
-            <span data-i18n="cfg_mask_debug_help">Save text segmentation mask for each bubble as mask_debug_N.png in the results folder. Green overlay = detected text pixels.</span>
           </div>
         </span>
       </div>
@@ -603,6 +627,160 @@
   </div>
 </div>
 
+<!-- ─── Panel: Settings ─── -->
+<div class="panel" id="panel-settings">
+  <div class="settings-panel">
+
+    <!-- Detection -->
+    <div class="settings-section">
+      <h3 class="settings-section-title" data-i18n="sett_section_detect">Detection</h3>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_detect_threshold">Bubble detection threshold</span>
+          <div class="setting-desc" data-i18n="sett_detect_threshold_desc">Minimum confidence for the detector to accept a bubble. Lower → more bubbles detected (including noise). Higher → fewer, more reliable. Default: 0.50.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-detect-threshold" min="0.10" max="0.90" step="0.05" value="0.50">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_sfx_threshold">SFX detection threshold</span>
+          <div class="setting-desc" data-i18n="sett_sfx_threshold_desc">Second-pass threshold for free-floating text (SFX / sound effects). Should be lower than the main threshold to catch small SFX not found in the first pass. Default: 0.30.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-sfx-threshold" min="0.10" max="0.90" step="0.05" value="0.30">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_min_area">Min bubble area (px²)</span>
+          <div class="setting-desc" data-i18n="sett_min_area_desc">Bubbles smaller than this area (in pixels²) are discarded after overlap clipping. Increase to ignore tiny false-positive detections. Default: 400.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-min-area" min="50" max="5000" step="50" value="400">
+        </div>
+      </div>
+    </div>
+
+    <!-- Rendering -->
+    <div class="settings-section">
+      <h3 class="settings-section-title" data-i18n="sett_section_render">Rendering</h3>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_max_font">Max font size (px)</span>
+          <div class="setting-desc" data-i18n="sett_max_font_desc">Upper limit for automatic font size selection. The auto-fit algorithm finds the largest font that fits the bubble; raising this cap lets text grow larger in big bubbles. Default: 90.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-max-font" min="20" max="300" step="1" value="90">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_inpaint_shrink">Inpaint mask shrink (px)</span>
+          <div class="setting-desc" data-i18n="sett_inpaint_shrink_desc">Number of pixels to pull the inpainting mask inward from the bubble border. Prevents LaMa from accidentally inpainting outside the bubble edge. Default: 1.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-inpaint-shrink" min="0" max="20" step="1" value="1">
+        </div>
+      </div>
+    </div>
+
+    <!-- Translation -->
+    <div class="settings-section">
+      <h3 class="settings-section-title" data-i18n="sett_section_translate">Translation</h3>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_chunk_size">Bubbles per LLM request</span>
+          <div class="setting-desc" data-i18n="sett_chunk_size_desc">How many speech bubbles are sent to the LLM in one batch. Larger batches provide more context (good for gender/tone consistency within a page) but make JSON parsing less reliable. Default: 5.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-chunk-size" min="1" max="20" step="1" value="5">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_retries">LLM retries on failure</span>
+          <div class="setting-desc" data-i18n="sett_retries_desc">Number of times to retry a failed LLM call (bad JSON, empty response, timeout). Higher values make translation more robust on unstable models at the cost of extra time. Default: 3.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" id="sett-retries" min="1" max="10" step="1" value="3">
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection -->
+    <div class="settings-section">
+      <h3 class="settings-section-title" data-i18n="sett_section_connection">Connection</h3>
+
+      <div class="setting-row setting-full">
+        <div>
+          <span class="setting-label" data-i18n="sett_ollama_url">Ollama API URL</span>
+          <div class="setting-desc" data-i18n="sett_ollama_url_desc">Full URL to the Ollama generate endpoint. Change this if Ollama is running on a different host or port. Default: http://localhost:11434/api/generate.</div>
+        </div>
+        <div class="setting-control">
+          <input type="text" id="sett-ollama-url" value="http://localhost:11434/api/generate" spellcheck="false">
+        </div>
+      </div>
+    </div>
+
+    <!-- Debug -->
+    <div class="settings-section">
+      <h3 class="settings-section-title" data-i18n="sett_section_debug">Diagnostics</h3>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="cfg_debug">Debug boxes on result</span>
+          <div class="setting-desc">
+            <span data-i18n="cfg_debug_desc_text">Draw colored bounding boxes on translated pages to diagnose detection and OCR results.</span>
+            <div class="sett-legend">
+              <div class="legend-row"><div class="swatch" style="border-color:#00c800;"></div><span class="label" data-i18n="legend_green">Green — translated successfully</span></div>
+              <div class="legend-row"><div class="swatch" style="border-color:#0096ff;"></div><span class="label" data-i18n="legend_blue">Blue — SFX translated</span></div>
+              <div class="legend-row"><div class="swatch" style="border-color:#ff8c00;"></div><span class="label" data-i18n="legend_orange">Orange — OCR found text, translation failed</span></div>
+              <div class="legend-row"><div class="swatch" style="border-color:#ff0000;"></div><span class="label" data-i18n="legend_red">Red — no OCR text</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="setting-checkbox-ctrl">
+          <input type="checkbox" id="cfg-debug">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="cfg_llm_debug">Verbose LLM logging (server console)</span>
+          <div class="setting-desc" data-i18n="cfg_llm_debug_help">When enabled, every prompt sent to the LLM and every response from it is printed to the server console. Useful for diagnosing translation issues. Slows things down and produces a lot of output.</div>
+        </div>
+        <div class="setting-checkbox-ctrl">
+          <input type="checkbox" id="cfg-llm-debug">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="cfg_mask_debug">Mask debug</span>
+          <div class="setting-desc" data-i18n="cfg_mask_debug_help">Save text segmentation mask for each bubble as mask_debug_N.png in the results folder. Green overlay = detected text pixels.</div>
+        </div>
+        <div class="setting-checkbox-ctrl">
+          <input type="checkbox" id="cfg-mask-debug">
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-reset-row">
+      <button class="btn-secondary" id="btn-reset-settings" data-i18n="sett_reset">Reset to defaults</button>
+    </div>
+
+  </div>
+</div>
+
 </main>
 
 <script>
@@ -616,12 +794,36 @@ const I18N = {
     tab_translate:    "Translate",
     tab_editor:       "Editor",
     tab_characters:   "Characters",
+    tab_settings:     "Settings",
+    sett_section_detect:    "Detection",
+    sett_section_render:    "Rendering",
+    sett_section_translate: "Translation",
+    sett_section_connection:"Connection",
+    sett_section_debug:     "Diagnostics",
+    sett_detect_threshold:  "Bubble detection threshold",
+    sett_detect_threshold_desc: "Minimum confidence for the detector to accept a bubble. Lower → more bubbles detected (including noise). Higher → fewer, more reliable. Default: 0.50.",
+    sett_sfx_threshold:     "SFX detection threshold",
+    sett_sfx_threshold_desc:"Second-pass threshold for free-floating text (SFX / sound effects). Should be lower than the main threshold to catch small SFX missed in the first pass. Default: 0.30.",
+    sett_min_area:          "Min bubble area (px²)",
+    sett_min_area_desc:     "Bubbles smaller than this area are discarded after overlap clipping. Increase to suppress tiny false-positive detections. Default: 400.",
+    sett_max_font:          "Max font size (px)",
+    sett_max_font_desc:     "Upper limit for automatic font size selection. Raising this cap lets text grow larger in big bubbles. Default: 90.",
+    sett_inpaint_shrink:    "Inpaint mask shrink (px)",
+    sett_inpaint_shrink_desc:"Pixels to pull the inpainting mask inward from the bubble border. Prevents LaMa from accidentally erasing content outside the bubble edge. Default: 1.",
+    sett_chunk_size:        "Bubbles per LLM request",
+    sett_chunk_size_desc:   "How many speech bubbles are sent to the LLM in one batch. Larger batches provide more context but make JSON parsing less reliable. Default: 5.",
+    sett_retries:           "LLM retries on failure",
+    sett_retries_desc:      "Number of times to retry a failed LLM call (bad JSON, empty response, timeout). Higher values make translation more robust at the cost of extra time. Default: 3.",
+    sett_ollama_url:        "Ollama API URL",
+    sett_ollama_url_desc:   "Full URL to the Ollama generate endpoint. Change if Ollama runs on a different host or port. Default: http://localhost:11434/api/generate.",
+    sett_reset:             "Reset to defaults",
     upload_drop:      "Drop chapter pages here",
     upload_or_click:  "or click to choose files (jpg, png, webp, zip, cbz)",
     upload_loading_archive: "Uploading archive: %1",
     cfg_lang:         "Translation language",
     cfg_font:         "Font path",
     cfg_debug:        "Debug boxes on result",
+    cfg_debug_desc_text: "Draw colored bounding boxes on translated pages to diagnose detection and OCR results.",
     cfg_llm_debug:    "Verbose LLM logging (server console)",
     cfg_llm_debug_help: "When enabled, every prompt sent to the LLM and every response from it is printed to the server console. Useful for diagnosing translation issues. Slows things down and produces a lot of output.",
     cfg_fast_mode:    "Fast mode (no context)",
@@ -710,18 +912,42 @@ const I18N = {
     tab_translate:    "Перевод",
     tab_editor:       "Редактор",
     tab_characters:   "Персонажи",
+    tab_settings:     "Настройки",
+    sett_section_detect:    "Детекция",
+    sett_section_render:    "Отрисовка",
+    sett_section_translate: "Перевод",
+    sett_section_connection:"Подключение",
+    sett_section_debug:     "Диагностика",
+    sett_detect_threshold:  "Порог детекции баблов",
+    sett_detect_threshold_desc: "Минимальная уверенность детектора для принятия бабла. Ниже → больше баблов (включая шум). Выше → меньше, но надёжнее. Умолчание: 0.50.",
+    sett_sfx_threshold:     "Порог детекции SFX",
+    sett_sfx_threshold_desc:"Порог второго прохода для плавающего текста (звуковые эффекты). Должен быть ниже основного порога — ловит SFX, пропущенные в первом проходе. Умолчание: 0.30.",
+    sett_min_area:          "Мин. площадь бабла (пикс²)",
+    sett_min_area_desc:     "Баблы меньше этой площади удаляются после клиппинга пересечений. Увеличьте, чтобы отсеять мелкие ложные срабатывания. Умолчание: 400.",
+    sett_max_font:          "Макс. размер шрифта (px)",
+    sett_max_font_desc:     "Верхняя граница автоподбора размера шрифта. Увеличение позволяет тексту стать крупнее в больших баблах. Умолчание: 90.",
+    sett_inpaint_shrink:    "Отступ маски инпейтинга (px)",
+    sett_inpaint_shrink_desc:"Пикселей, на которые маска инпейтинга отступает от края bbox. Защищает фон рядом с баблом от случайного стирания. Умолчание: 1.",
+    sett_chunk_size:        "Баблов за один LLM-запрос",
+    sett_chunk_size_desc:   "Сколько баблов отправляется LLM в одном батче. Больше → больше контекста, но JSON менее надёжен. Умолчание: 5.",
+    sett_retries:           "Повторных попыток LLM",
+    sett_retries_desc:      "Число попыток повторить вызов при ошибке LLM (плохой JSON, пустой ответ, таймаут). Больше → стабильнее, но медленнее. Умолчание: 3.",
+    sett_ollama_url:        "URL Ollama API",
+    sett_ollama_url_desc:   "Полный URL эндпоинта генерации Ollama. Измените, если Ollama запущена на другом хосте или порту. Умолчание: http://localhost:11434/api/generate.",
+    sett_reset:             "Сбросить настройки по умолчанию",
     upload_drop:      "Перетащите страницы главы сюда",
     upload_or_click:  "или нажмите чтобы выбрать файлы (jpg, png, webp, zip, cbz)",
     upload_loading_archive: "Загружаем архив: %1",
     cfg_lang:         "Язык перевода",
     cfg_font:         "Путь к шрифту",
     cfg_debug:        "Дебаг-рамки на результате",
+    cfg_debug_desc_text: "Рисует цветные рамки на переведённых страницах для диагностики детекции и распознавания текста.",
     cfg_llm_debug:    "Подробный лог LLM (в консоли сервера)",
     cfg_llm_debug_help: "Когда включено, каждый запрос к LLM и каждый ответ от неё печатаются в консоль сервера. Полезно для диагностики проблем с переводом. Замедляет работу и производит много вывода.",
     cfg_fast_mode:    "Быстрый режим (без контекста)",
     cfg_fast_mode_help: "Пропускает анализ страницы и определение спикеров. Экономит 2-3 vision-вызова на страницу (≈30-60 секунд), но баблы переводятся без контекста сцены, и архив персонажей не обновляется. Полезно для быстрых черновых переводов.",
-    cfg_mask_debug:    "Дебаг масок",
-    cfg_mask_debug_help: "Сохраняет маску детекции текста для каждого бабла в папку mask_debug внутри результатов. Зелёный = обнаруженные пиксели текста.",
+    cfg_mask_debug:    "Дебаг маски",
+    cfg_mask_debug_help: "Сохраняет маску детекции текста для каждого бабла в папку mask_debug внутри папки results. Зелёный = обнаруженные пиксели текста.",
     legend_title:     "Цвета рамок на результате",
     legend_green:     "Зелёный — бабл переведён успешно",
     legend_blue:      "Синий — текст вне бабла (SFX) переведён",
@@ -836,6 +1062,7 @@ document.querySelectorAll(".lang-btn").forEach(btn => {
 let currentJobId = null;
 let currentJobPages = [];
 let currentEditPage = null;
+let deletedBubbleIdxs = new Set();
 let ws = null;
 let startTime = null;
 let totalPagesGlobal = 0;
@@ -923,6 +1150,16 @@ async function startUpload(files) {
   form.append('llm_debug', $('cfg-llm-debug').checked ? 'true' : 'false');
   form.append('fast_mode', $('cfg-fast-mode').checked ? 'true' : 'false');
   form.append('mask_debug', $('cfg-mask-debug').checked ? 'true' : 'false');
+  // Settings panel values
+  const sett = loadSettings();
+  form.append('ollama_url',       sett.ollama_url);
+  form.append('detect_threshold', sett.detect_threshold);
+  form.append('sfx_threshold',    sett.sfx_threshold);
+  form.append('min_bubble_area',  sett.min_bubble_area);
+  form.append('max_font_size',    sett.max_font_size);
+  form.append('inpaint_shrink',   sett.inpaint_shrink);
+  form.append('chunk_size',       sett.chunk_size);
+  form.append('translate_retries',sett.translate_retries);
 
   log(archiveMode ? t("upload_loading_archive", files[0].name) : t("upload_loading", files.length));
   $('progress-wrap').style.display = 'block';
@@ -1178,6 +1415,7 @@ function openEditPage(pageNum) {
   const page = currentJobPages.find(p => p.page === pageNum);
   if (!page) return;
   currentEditPage = page;
+  deletedBubbleIdxs = new Set();
   $('editor-page-select').value = pageNum;
   const origUrl = `/files/uploads/${currentJobId}/${page.filename}`;
   $('editor-original').innerHTML = `<img src="${origUrl}" alt="Original">`;
@@ -1222,6 +1460,7 @@ function openEditPage(pageNum) {
     const align       = b.text_align || 'center';
 
     item.innerHTML = `
+      <button type="button" class="bubble-delete-btn" data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
       <div class="num">#${b.idx} ${b.speaker !== 'unknown' ? '— ' + escapeHtml(b.speaker) : ''}</div>
       <div class="speaker">${b.x},${b.y} • ${b.w}×${b.h} • ${b.gender}</div>
       <div class="original">${escapeHtml(b.text) || t("no_ocr")}</div>
@@ -1236,8 +1475,6 @@ function openEditPage(pageNum) {
           <label data-i18n="editor_color" style="margin:0;white-space:nowrap;">Color:</label>
           <input type="color" data-idx="${b.idx}" data-field="text_color" value="${colorVal}"
                  title="${t('editor_color')}">
-          <button type="button" class="btn-danger" style="padding:3px 8px; font-size:11px;"
-                  data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
         </div>
       </div>
       <div class="bubble-style-row2">
@@ -1319,12 +1556,17 @@ function openEditPage(pageNum) {
     };
   });
 
-  // Delete buttons — clear translation
+  // Delete buttons — remove bubble item from DOM and mark for empty-translation rerender
   side.querySelectorAll('[data-delete-idx]').forEach(btn => {
     btn.onclick = () => {
-      const idx = btn.dataset.deleteIdx;
-      const ta = side.querySelector(`textarea[data-idx="${idx}"]`);
-      if (ta) ta.value = '';
+      const idx = parseInt(btn.dataset.deleteIdx);
+      deletedBubbleIdxs.add(idx);
+      const b = currentEditPage?.bubbles.find(x => x.idx === idx);
+      if (b) b.translation = '';
+      btn.closest('.bubble-item')?.remove();
+      // Hide overlay if the deleted bubble was selected
+      const overlay = $('bubble-select-overlay');
+      if (overlay) overlay.style.display = 'none';
     };
   });
 
@@ -1608,6 +1850,11 @@ $('btn-rerender').onclick = async () => {
   // Default text_align = center for bubbles where no align button was active
   const updates = Object.values(byIdx);
   updates.forEach(u => { if (!u.text_align) u.text_align = 'center'; });
+  // Включаем удалённые баблы с пустым переводом, чтобы сервер не рисовал их
+  deletedBubbleIdxs.forEach(idx => {
+    if (!byIdx[idx]) updates.push({ idx, translation: '' });
+    else byIdx[idx].translation = '';
+  });
   const btn = $('btn-rerender');
   btn.disabled = true; btn.textContent = t("rerendering");
   try {
@@ -1801,6 +2048,70 @@ function escapeHtml(s) {
   );
 }
 
+//═════════════════════════════════════════════════════════════════════
+// Settings panel
+//═════════════════════════════════════════════════════════════════════
+
+const SETTINGS_DEFAULTS = {
+  detect_threshold:  0.50,
+  sfx_threshold:     0.30,
+  min_bubble_area:   400,
+  max_font_size:     90,
+  inpaint_shrink:    1,
+  chunk_size:        5,
+  translate_retries: 3,
+  ollama_url:        'http://localhost:11434/api/generate',
+};
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('kotoba_settings') || '{}');
+    return { ...SETTINGS_DEFAULTS, ...saved };
+  } catch { return { ...SETTINGS_DEFAULTS }; }
+}
+
+function applySettingsToUI(sett) {
+  $('sett-detect-threshold').value = sett.detect_threshold;
+  $('sett-sfx-threshold').value    = sett.sfx_threshold;
+  $('sett-min-area').value         = sett.min_bubble_area;
+  $('sett-max-font').value         = sett.max_font_size;
+  $('sett-inpaint-shrink').value   = sett.inpaint_shrink;
+  $('sett-chunk-size').value       = sett.chunk_size;
+  $('sett-retries').value          = sett.translate_retries;
+  $('sett-ollama-url').value       = sett.ollama_url;
+}
+
+function saveSettings() {
+  const sett = {
+    detect_threshold:  parseFloat($('sett-detect-threshold').value) || SETTINGS_DEFAULTS.detect_threshold,
+    sfx_threshold:     parseFloat($('sett-sfx-threshold').value)    || SETTINGS_DEFAULTS.sfx_threshold,
+    min_bubble_area:   parseInt($('sett-min-area').value)           || SETTINGS_DEFAULTS.min_bubble_area,
+    max_font_size:     parseInt($('sett-max-font').value)           || SETTINGS_DEFAULTS.max_font_size,
+    inpaint_shrink:    parseInt($('sett-inpaint-shrink').value),
+    chunk_size:        parseInt($('sett-chunk-size').value)         || SETTINGS_DEFAULTS.chunk_size,
+    translate_retries: parseInt($('sett-retries').value)            || SETTINGS_DEFAULTS.translate_retries,
+    ollama_url:        $('sett-ollama-url').value.trim()            || SETTINGS_DEFAULTS.ollama_url,
+  };
+  localStorage.setItem('kotoba_settings', JSON.stringify(sett));
+}
+
+// Wire settings controls → auto-save on change
+['sett-detect-threshold','sett-sfx-threshold','sett-min-area','sett-max-font',
+ 'sett-inpaint-shrink','sett-chunk-size','sett-retries','sett-ollama-url'
+].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener('change', saveSettings);
+});
+
+$('btn-reset-settings').addEventListener('click', () => {
+  applySettingsToUI(SETTINGS_DEFAULTS);
+  localStorage.removeItem('kotoba_settings');
+  $('cfg-debug').checked     = false;
+  $('cfg-llm-debug').checked = false;
+  $('cfg-mask-debug').checked = false;
+  saveConfig();
+});
+
 // Initial render
 applyI18n();
 // Font picker создаём ДО restoreConfig, чтобы $('cfg-font') уже существовал
@@ -1808,6 +2119,7 @@ initGlobalFontPicker('arial.ttf');
 loadModels();
 restoreConfig();
 wireConfigPersistence();
+applySettingsToUI(loadSettings());
 
 // ─── persisted config (lang/font/model) ─────────────────────────────────────
 

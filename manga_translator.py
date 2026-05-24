@@ -40,6 +40,15 @@ warnings.filterwarnings("ignore")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 CROPS_DIR: str = "crops"   # переопределяется web.py под каждый job_id
+
+# ─── настраиваемые параметры (переопределяются web.py перед каждым запуском) ─
+DETECT_THRESHOLD:  float = 0.5    # порог уверенности детектора баблов (основной проход)
+SFX_THRESHOLD:     float = 0.3    # порог второго прохода (только text_free / SFX)
+MIN_BUBBLE_AREA:   int   = 400    # минимальная площадь бабла после клиппинга (пикс²)
+MAX_FONT_SIZE:     int   = 90     # максимальный размер шрифта при автоподборе (px)
+INPAINT_SHRINK:    int   = 1      # отступ маски инпейтинга от края bbox (px)
+TRANSLATE_CHUNK_SIZE: int = 5     # баблов за один LLM-запрос
+TRANSLATE_RETRIES: int   = 3      # повторных попыток при ошибке LLM
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
 BUBBLE_MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
@@ -1013,7 +1022,6 @@ Return ONLY JSON:
 
 
 # ─── перевод ──────────────────────────────────────────────────────────────────
-_TRANSLATE_CHUNK_SIZE = 5
 
 def translate_batch(bubbles: list[dict], page_context: str,
                     manga_ctx: MangaContext, target_lang: str = "Russian",
@@ -1057,11 +1065,11 @@ def translate_batch(bubbles: list[dict], page_context: str,
 
     missing_indices = []  # глобальные индексы в to_translate, которые не перевелись
 
-    chunks = [to_translate[i:i + _TRANSLATE_CHUNK_SIZE]
-              for i in range(0, len(to_translate), _TRANSLATE_CHUNK_SIZE)]
+    chunks = [to_translate[i:i + TRANSLATE_CHUNK_SIZE]
+              for i in range(0, len(to_translate), TRANSLATE_CHUNK_SIZE)]
     if len(chunks) > 1:
         print(f"     [batch] Splitting {len(to_translate)} bubbles into "
-              f"{len(chunks)} chunks of up to {_TRANSLATE_CHUNK_SIZE}")
+              f"{len(chunks)} chunks of up to {TRANSLATE_CHUNK_SIZE}")
     for chunk_idx, chunk in enumerate(chunks):
         _translate_chunk(
             chunk, chunk_idx, to_translate, missing_indices,
@@ -1107,7 +1115,7 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
     строку на очень короткие промпты, и расширение помогает.
     """
     # Локальная нумерация в чанке (1-based) → индекс в to_translate
-    chunk_offset = chunk_idx * _TRANSLATE_CHUNK_SIZE
+    chunk_offset = chunk_idx * TRANSLATE_CHUNK_SIZE
     local_to_global = {i + 1: chunk_offset + i for i in range(len(chunk))}
 
     # Padding для совсем маленьких чанков. Промпт становится "весомее"
@@ -1892,7 +1900,7 @@ def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
 
     Fallback: cv2.inpaint при ошибке LaMa или если модель не загрузилась.
     """
-    mask_np = build_inpaint_mask(img_cv, bubbles)
+    mask_np = build_inpaint_mask(img_cv, bubbles, shrink=INPAINT_SHRINK)
 
     if not mask_np.any():
         return img_cv.copy()    # инпейтить нечего
@@ -2160,7 +2168,7 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
 
     def _search(allow_hyphenation: bool):
         """Бинарный поиск максимального размера. Возвращает best tuple или None."""
-        lo, hi = 6, 90
+        lo, hi = 6, MAX_FONT_SIZE
         best_local = None
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -2477,36 +2485,45 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
             outline_color=b_outline_color, outline_width=b_outline_width,
         )
 
+        # Текст всегда рендерим по полному боксу (bw×bh), затем кропаем до
+        # effective_box — так текст всегда центрирован в боксе пользователя,
+        # а effective_box лишь маскирует область перекрытия с меньшими баблами.
+        off_x = ex - bx  # сдвиг effective_box внутри полного бокса
+        off_y = ey - by
+
         if abs(text_angle) > 45:
             # Вертикальный текст: рендерим «горизонтально» с переставленными
             # размерами, затем поворачиваем на ±90° — читается сверху вниз.
             rot_deg = -90 if text_angle > 0 else 90
-            block = _render_text_block(translation, eh, ew, color, **_style)
+            block = _render_text_block(translation, bh, bw, color, **_style)
             # BICUBIC — лучшее что поддерживает rotate(); LANCZOS там недоступен
             block = block.rotate(rot_deg, expand=True,
                                  resample=Image.Resampling.BICUBIC)
+            bw_r, bh_r = block.size
+            # Центрируем rotated-блок над полным боксом, затем берём effective-область
+            cx_r = max(0, (bw_r - bw) // 2)
+            cy_r = max(0, (bh_r - bh) // 2)
+            block = block.crop((cx_r + off_x, cy_r + off_y,
+                                 cx_r + off_x + ew, cy_r + off_y + eh))
         elif abs(text_angle) > 1:
             # Наклонный текст: рендерим в 2× разрешении (суперсэмплинг),
             # поворачиваем с BICUBIC, затем уменьшаем с LANCZOS — убирает ступенчатость.
             SS = 2
-            big = _render_text_block(translation, ew * SS, eh * SS, color, **_style)
+            big = _render_text_block(translation, bw * SS, bh * SS, color, **_style)
             big = big.rotate(-text_angle, expand=True,
                              resample=Image.Resampling.BICUBIC)
             bw_big, bh_big = big.size
-            cx = max(0, (bw_big - ew * SS) // 2)
-            cy = max(0, (bh_big - eh * SS) // 2)
-            big = big.crop((cx, cy, cx + ew * SS, cy + eh * SS))
-            block = big.resize((ew, eh), Image.Resampling.LANCZOS)
+            cx = max(0, (bw_big - bw * SS) // 2)
+            cy = max(0, (bh_big - bh * SS) // 2)
+            big = big.crop((cx, cy, cx + bw * SS, cy + bh * SS))
+            block_full = big.resize((bw, bh), Image.Resampling.LANCZOS)
+            block = block_full.crop((off_x, off_y, off_x + ew, off_y + eh))
         else:
             # Горизонтальный текст — без поворота.
-            block = _render_text_block(translation, ew, eh, color, **_style)
+            block = _render_text_block(translation, bw, bh, color, **_style)
+            if off_x or off_y or ew != bw or eh != bh:
+                block = block.crop((off_x, off_y, off_x + ew, off_y + eh))
 
-        # Обрезаем до размеров effective-бокса (центрирование) — блок не вылазит.
-        bw_r, bh_r = block.size
-        if bw_r != ew or bh_r != eh:
-            cx = max(0, (bw_r - ew) // 2)
-            cy = max(0, (bh_r - eh) // 2)
-            block = block.crop((cx, cy, cx + ew, cy + eh))
         pil.paste(block, (ex, ey), block)
 
     # 4. Debug-оверлей рисуем поверх — рамки и номера
@@ -2584,10 +2601,10 @@ def process_page(image_path: str, page_idx: int,
     image_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
 
     # 1. Детекция и сортировка баблов (PIL уже в памяти — файл не перечитывается)
-    bubbles = detect_bubbles(image_pil, threshold=0.5)
+    bubbles = detect_bubbles(image_pil, threshold=DETECT_THRESHOLD)
     # Второй проход с пониженным порогом — ловим text_free SFX на сложном фоне
-    # (типа "DWEH!" поверх тела персонажа), которые детектор пропускает при 0.5.
-    for b in detect_bubbles(image_pil, threshold=0.3):
+    # (типа "DWEH!" поверх тела персонажа), которые детектор пропускает при основном пороге.
+    for b in detect_bubbles(image_pil, threshold=SFX_THRESHOLD):
         if b["class"] != "text_free":
             continue
         bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
@@ -2600,7 +2617,7 @@ def process_page(image_path: str, page_idx: int,
         if not covered:
             bubbles.append(b)
             print(f"  [sfx+] text_free @ ({bx},{by}) score={b['confidence']:.2f}")
-    bubbles = _clip_overlapping_boxes(bubbles)
+    bubbles = _clip_overlapping_boxes(bubbles, min_area=MIN_BUBBLE_AREA)
     text_bubbles = sorted(
         [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
         key=reading_order,
@@ -2695,7 +2712,7 @@ def process_page(image_path: str, page_idx: int,
     print("\n── Translation ──")
     stage("stage_translate")
     translate_batch(text_bubbles, page_context, manga_ctx, target_lang,
-                    errors=errors, page_idx=page_idx)
+                    retries=TRANSLATE_RETRIES, errors=errors, page_idx=page_idx)
     for i, b in enumerate(text_bubbles):
         print(f"  [{i+1}] {b.get('text', '')[:25]} → {b.get('translation', '')[:40]}")
 
@@ -2741,6 +2758,14 @@ def process_directory(input_dir: str, output_dir: str = "results",
                       fast_mode: bool = False,
                       error_log_path: str = "errors.log",
                       llm_model: str | None = None,
+                      ollama_url: str | None = None,
+                      detect_threshold: float | None = None,
+                      sfx_threshold: float | None = None,
+                      min_bubble_area: int | None = None,
+                      max_font_size: int | None = None,
+                      inpaint_shrink: int | None = None,
+                      chunk_size: int | None = None,
+                      translate_retries: int | None = None,
                       on_page_done=None,
                       on_start=None,
                       on_finish=None,
@@ -2757,10 +2782,30 @@ def process_directory(input_dir: str, output_dir: str = "results",
         stage_detect → stage_ocr → stage_analyze → stage_attribute
         → stage_translate → stage_inpaint
     """
+    global LLM_MODEL, OLLAMA_URL
+    global DETECT_THRESHOLD, SFX_THRESHOLD, MIN_BUBBLE_AREA
+    global MAX_FONT_SIZE, INPAINT_SHRINK, TRANSLATE_CHUNK_SIZE, TRANSLATE_RETRIES
+
     if llm_model:
-        global LLM_MODEL
         LLM_MODEL = llm_model
         print(f"[llm] Using model: {llm_model}")
+    if ollama_url:
+        OLLAMA_URL = ollama_url
+        print(f"[llm] Ollama URL: {ollama_url}")
+    if detect_threshold is not None:
+        DETECT_THRESHOLD = float(detect_threshold)
+    if sfx_threshold is not None:
+        SFX_THRESHOLD = float(sfx_threshold)
+    if min_bubble_area is not None:
+        MIN_BUBBLE_AREA = int(min_bubble_area)
+    if max_font_size is not None:
+        MAX_FONT_SIZE = int(max_font_size)
+    if inpaint_shrink is not None:
+        INPAINT_SHRINK = int(inpaint_shrink)
+    if chunk_size is not None:
+        TRANSLATE_CHUNK_SIZE = int(chunk_size)
+    if translate_retries is not None:
+        TRANSLATE_RETRIES = int(translate_retries)
     # Проверяем шрифт. Если указан — используем его. Если нет — пробуем
     # типичные манга-friendly шрифты по очереди, отдавая предпочтение жирным.
     def _resolve_font(requested: str) -> str | None:
