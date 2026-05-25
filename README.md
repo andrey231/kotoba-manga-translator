@@ -53,8 +53,6 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 |---|---|---|
 | Tracks characters across pages | ✅ | ❌ |
 | Scene-aware translation (knows what's happening on the page) | ✅ | ❌ |
-| Speaker attribution (who said this?) | ✅ | Rarely |
-| Per-bubble font/size override in the editor | ✅ | Sometimes |
 | Portable Python — no system install needed | ✅ (Windows) | Usually a `pip install` chore |
 | Fully local, no cloud APIs | ✅ | Mixed |
 | Web UI with drag-and-drop + editor + i18n | ✅ EN/RU | Some |
