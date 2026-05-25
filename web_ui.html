@@ -90,7 +90,15 @@
   button:disabled { background: #333; color: #666; cursor: not-allowed; }
   .btn-secondary { background: #3a3a3a; }
   .btn-secondary:hover { background: #4a4a4a; }
+  .btn-secondary.tool-active { background: #2a5a2a; color: #7fdf7f; }
+  .btn-secondary.tool-active:hover { background: #3a6a3a; }
   .btn-danger { background: #802a2a; }
+  /* Detect-region selection canvas */
+  #detect-sel-canvas {
+    position: absolute; top: 0; left: 0;
+    pointer-events: none; z-index: 15;
+  }
+  .editor-image.detect-mode { cursor: crosshair; }
   .btn-danger:hover { background: #a03a3a; }
 
   /* Progress */
@@ -464,6 +472,35 @@
   .setting-row.setting-full .setting-control input[type="text"] { width: 100%; max-width: 500px; }
   .setting-default { font-size: 11px; color: #555; white-space: nowrap; }
   .settings-reset-row { margin-top: 4px; }
+
+  /* ─── Glossary editor ─── */
+  .glossary-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 13px; }
+  .glossary-table th {
+    text-align: left; padding: 6px 10px; color: #888;
+    font-weight: 500; border-bottom: 1px solid #333; font-size: 11px; text-transform: uppercase;
+  }
+  .glossary-table td { padding: 4px 6px; border-bottom: 1px solid #2a2a2a; }
+  .glossary-table tr:last-child td { border-bottom: none; }
+  .gloss-cell {
+    width: 100%; background: transparent; border: none; color: #e0e0e0;
+    font-size: 13px; padding: 4px; outline: none; border-radius: 4px;
+  }
+  .gloss-cell:focus { background: #1a1a1a; border: 1px solid #4a7fc0; }
+  .gloss-del {
+    background: none; border: none; color: #666; cursor: pointer;
+    padding: 2px 8px; font-size: 18px; line-height: 1; border-radius: 4px;
+  }
+  .gloss-del:hover { color: #f55; background: #2a1a1a; }
+  .glossary-add-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+  .glossary-add-row .gloss-cell-input {
+    flex: 1; padding: 7px 10px; font-size: 13px;
+    background: #1a1a1a; border: 1px solid #444; color: #e0e0e0;
+    border-radius: 6px; outline: none;
+  }
+  .glossary-add-row .gloss-cell-input:focus { border-color: #4a7fc0; }
+  .glossary-add-row .gloss-note-w { flex: 1.5; }
+  .glossary-actions { display: flex; gap: 8px; }
+  .glossary-empty { color: #555; font-size: 13px; padding: 12px 10px; }
   .setting-checkbox-ctrl {
     display: flex; justify-content: flex-end; align-items: center;
   }
@@ -489,6 +526,7 @@
     <div class="tab active" data-panel="translate"  data-i18n="tab_translate">Translate</div>
     <div class="tab" data-panel="editor"             data-i18n="tab_editor">Editor</div>
     <div class="tab" data-panel="characters"         data-i18n="tab_characters">Characters</div>
+    <div class="tab" data-panel="glossary"           data-i18n="tab_glossary">Glossary</div>
     <div class="tab" data-panel="settings"           data-i18n="tab_settings">Settings</div>
   </div>
   <div class="job-id-pill" id="job-id-pill">
@@ -592,6 +630,7 @@
     </div>
     <div style="display:flex; gap:8px;">
       <button class="btn-secondary" id="btn-reload-job" data-i18n="editor_load_job">Load job...</button>
+      <button class="btn-secondary" id="btn-detect-region" data-i18n="editor_detect_region">🔍 Detect region</button>
       <button id="btn-rerender" data-i18n="editor_rerender">💾 Save and re-render</button>
     </div>
   </div>
@@ -624,6 +663,40 @@
   </div>
   <div class="characters-list" id="characters-list">
     <div class="empty" data-i18n="loading">Loading...</div>
+  </div>
+</div>
+
+<!-- ─── Panel: Glossary ─── -->
+<div class="panel" id="panel-glossary">
+  <div style="max-width:860px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h2 style="margin:0; font-size:18px;" data-i18n="tab_glossary">Glossary</h2>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-secondary" id="btn-gloss-import" data-i18n="gloss_import">Import JSON</button>
+        <button class="btn-secondary" id="btn-gloss-export" data-i18n="gloss_export">Export JSON</button>
+        <input type="file" id="gloss-import-file" accept=".json" style="display:none">
+      </div>
+    </div>
+    <p class="setting-desc" style="margin:0 0 16px" data-i18n="sett_glossary_desc">Terms that will always be translated consistently. Useful for character names, place names, and special terminology.</p>
+
+    <table class="glossary-table">
+      <thead>
+        <tr>
+          <th data-i18n="gloss_col_source">Source (original)</th>
+          <th data-i18n="gloss_col_target">Translation</th>
+          <th data-i18n="gloss_col_note">Note</th>
+          <th style="width:36px"></th>
+        </tr>
+      </thead>
+      <tbody id="glossary-tbody"></tbody>
+    </table>
+
+    <div class="glossary-add-row">
+      <input type="text" id="gloss-new-src" class="gloss-cell-input" data-i18n-placeholder="gloss_placeholder_src" placeholder="Original…">
+      <input type="text" id="gloss-new-tgt" class="gloss-cell-input" data-i18n-placeholder="gloss_placeholder_tgt" placeholder="Translation…">
+      <input type="text" id="gloss-new-note" class="gloss-cell-input gloss-note-w" data-i18n-placeholder="gloss_placeholder_note" placeholder="Note (optional)">
+      <button class="btn-secondary" id="btn-gloss-add" data-i18n="gloss_add">Add</button>
+    </div>
   </div>
 </div>
 
@@ -794,6 +867,7 @@ const I18N = {
     tab_translate:    "Translate",
     tab_editor:       "Editor",
     tab_characters:   "Characters",
+    tab_glossary:     "Glossary",
     tab_settings:     "Settings",
     sett_section_detect:    "Detection",
     sett_section_render:    "Rendering",
@@ -844,8 +918,12 @@ const I18N = {
     job_id_what_desc: "A unique identifier for the current translation job. Use it to reopen this chapter in the Editor tab later — copy the ID and paste it via the \"Load job...\" button. Results stay available on the server as long as you do not clear them manually.",
     progress_preparing: "Preparing...",
     editor_page:      "Page:",
-    editor_load_job:  "Load job...",
-    editor_rerender:  "💾 Save and re-render",
+    editor_load_job:       "Load job...",
+    editor_detect_region:  "🔍 Detect region",
+    editor_detecting:      "Detecting...",
+    editor_detect_none:    "No bubbles detected in selected area",
+    editor_detect_failed:  "Detection failed",
+    editor_rerender:       "💾 Save and re-render",
     editor_font:      "Font:",
     editor_size:      "Size:",
     editor_color:     "Color:",
@@ -906,12 +984,24 @@ const I18N = {
     export_hint:      "Download translated chapter:",
     export_zip:       "📦 Download ZIP",
     export_cbz:       "📚 Download CBZ",
+    sett_glossary_desc: "Terms that will always be translated consistently. Useful for character names, place names, and special terminology.",
+    gloss_col_source:  "Source (original)",
+    gloss_col_target:  "Translation",
+    gloss_col_note:    "Note",
+    gloss_add:         "Add",
+    gloss_import:      "Import JSON",
+    gloss_export:      "Export JSON",
+    gloss_empty:       "No entries yet. Add terms above.",
+    gloss_placeholder_src:  "Original…",
+    gloss_placeholder_tgt:  "Translation…",
+    gloss_placeholder_note: "Note (optional)",
   },
   ru: {
     app_title:        "Kotoba",
     tab_translate:    "Перевод",
     tab_editor:       "Редактор",
     tab_characters:   "Персонажи",
+    tab_glossary:     "Глоссарий",
     tab_settings:     "Настройки",
     sett_section_detect:    "Детекция",
     sett_section_render:    "Отрисовка",
@@ -962,8 +1052,12 @@ const I18N = {
     job_id_what_desc: "Уникальный идентификатор текущего перевода. Используется чтобы потом открыть главу заново на вкладке «Редактор» — скопируйте ID и вставьте через кнопку «Загрузить джоб...». Результаты на сервере хранятся пока вы их вручную не очистите.",
     progress_preparing: "Готовится...",
     editor_page:      "Страница:",
-    editor_load_job:  "Загрузить джоб...",
-    editor_rerender:  "💾 Сохранить и перерисовать",
+    editor_load_job:       "Загрузить джоб...",
+    editor_detect_region:  "🔍 Детектировать область",
+    editor_detecting:      "Детектирование...",
+    editor_detect_none:    "Баблы не найдены в выбранной области",
+    editor_detect_failed:  "Ошибка детектирования",
+    editor_rerender:       "💾 Сохранить и перерисовать",
     editor_font:      "Шрифт:",
     editor_size:      "Размер:",
     editor_color:     "Цвет:",
@@ -1022,6 +1116,17 @@ const I18N = {
     export_hint:      "Скачать переведённую главу:",
     export_zip:       "📦 Скачать ZIP",
     export_cbz:       "📚 Скачать CBZ",
+    sett_glossary_desc: "Термины, которые всегда переводятся одинаково. Полезно для имён персонажей, названий мест и специальной терминологии.",
+    gloss_col_source:  "Оригинал",
+    gloss_col_target:  "Перевод",
+    gloss_col_note:    "Примечание",
+    gloss_add:         "Добавить",
+    gloss_import:      "Импорт JSON",
+    gloss_export:      "Экспорт JSON",
+    gloss_empty:       "Глоссарий пуст. Добавьте термины выше.",
+    gloss_placeholder_src:  "Оригинал…",
+    gloss_placeholder_tgt:  "Перевод…",
+    gloss_placeholder_note: "Примечание (необязательно)",
   },
 };
 
@@ -1037,6 +1142,9 @@ function applyI18n() {
   document.documentElement.lang = LANG;
   document.querySelectorAll("[data-i18n]").forEach(el => {
     el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
   });
   document.querySelectorAll(".lang-btn").forEach(b => {
     b.classList.toggle("active", b.dataset.lang === LANG);
@@ -1082,6 +1190,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     $('panel-' + tab.dataset.panel).classList.add('active');
     if (tab.dataset.panel === 'characters') loadCharacters();
+    if (tab.dataset.panel === 'glossary') loadGlossary();
   };
 });
 
@@ -1815,6 +1924,130 @@ function makeFontSelect(b) {
 // Pre-load fonts in background so dropdown opens instantly
 loadFonts();
 
+//═════════════════════════════════════════════════════════════════════
+// Detect-region tool
+//═════════════════════════════════════════════════════════════════════
+let detectRegionActive = false;
+let _detectDrag = null;  // {startX, startY, endX, endY, canvas, ctx}
+
+function _getDetectCanvas() {
+  let c = $('detect-sel-canvas');
+  if (c) return c;
+  const img = $('editor-img-main');
+  if (!img) return null;
+  c = document.createElement('canvas');
+  c.id = 'detect-sel-canvas';
+  c.width  = img.clientWidth;
+  c.height = img.clientHeight;
+  $('editor-image').appendChild(c);
+  return c;
+}
+
+$('btn-detect-region').onclick = () => {
+  detectRegionActive = !detectRegionActive;
+  $('btn-detect-region').classList.toggle('tool-active', detectRegionActive);
+  $('editor-image').classList.toggle('detect-mode', detectRegionActive);
+  if (!detectRegionActive) {
+    const c = $('detect-sel-canvas');
+    if (c) c.remove();
+    _detectDrag = null;
+  }
+};
+
+$('editor-image').addEventListener('mousedown', e => {
+  if (!detectRegionActive || !currentEditPage) return;
+  const img = $('editor-img-main');
+  if (!img || !img.naturalWidth) return;
+  e.preventDefault();
+  const rect = img.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const canvas = _getDetectCanvas();
+  if (!canvas) return;
+  canvas.width  = img.clientWidth;
+  canvas.height = img.clientHeight;
+  _detectDrag = { startX: x, startY: y, endX: x, endY: y, canvas, ctx: canvas.getContext('2d') };
+});
+
+document.addEventListener('mousemove', e => {
+  if (!_detectDrag) return;
+  const img = $('editor-img-main');
+  if (!img) return;
+  const rect = img.getBoundingClientRect();
+  _detectDrag.endX = e.clientX - rect.left;
+  _detectDrag.endY = e.clientY - rect.top;
+  const { startX, startY, endX, endY, canvas, ctx } = _detectDrag;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const dx = endX - startX, dy = endY - startY;
+  ctx.fillStyle   = 'rgba(60,200,80,0.10)';
+  ctx.strokeStyle = '#3fc85a';
+  ctx.lineWidth   = 2;
+  ctx.setLineDash([5, 4]);
+  ctx.fillRect(startX, startY, dx, dy);
+  ctx.strokeRect(startX, startY, dx, dy);
+});
+
+document.addEventListener('mouseup', async e => {
+  if (!_detectDrag || !currentEditPage) return;
+  const { startX, startY, endX, endY, canvas } = _detectDrag;
+  _detectDrag = null;
+  // Clear canvas
+  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+
+  const img = $('editor-img-main');
+  if (!img || !img.naturalWidth) return;
+
+  // Map CSS-px → image-px
+  const scale = img.naturalWidth / img.clientWidth;
+  const x = Math.round(Math.min(startX, endX) * scale);
+  const y = Math.round(Math.min(startY, endY) * scale);
+  const w = Math.round(Math.abs(endX - startX) * scale);
+  const h = Math.round(Math.abs(endY - startY) * scale);
+  if (w < 10 || h < 10) return;
+
+  const btn = $('btn-detect-region');
+  btn.disabled = true;
+  btn.textContent = t('editor_detecting');
+
+  try {
+    const r = await fetch(
+      `/api/job/${currentJobId}/page/${currentEditPage.page}/detect-region`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ x, y, w, h }),
+      }
+    );
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+
+    if (!data.new_bubbles || data.new_bubbles.length === 0) {
+      alert(t('editor_detect_none'));
+      return;
+    }
+
+    // Merge new bubbles + update URL in client-side page data
+    currentEditPage.bubbles.push(...data.new_bubbles);
+    if (data.url) currentEditPage.url = data.url;
+
+    // Rebuild page (image + sidebar)
+    openEditPage(currentEditPage.page);
+
+    // Re-enable detect mode on the fresh image
+    if (detectRegionActive) {
+      $('editor-image').classList.add('detect-mode');
+      _getDetectCanvas();
+    }
+
+  } catch (ex) {
+    alert(t('editor_detect_failed') + ': ' + ex.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = t('editor_detect_region');
+    btn.classList.toggle('tool-active', detectRegionActive);
+  }
+});
+
 $('btn-rerender').onclick = async () => {
   if (!currentEditPage) { alert(t("open_page_first")); return; }
   // Собираем updates по idx — все поля каждого бабла
@@ -2110,6 +2343,111 @@ $('btn-reset-settings').addEventListener('click', () => {
   $('cfg-llm-debug').checked = false;
   $('cfg-mask-debug').checked = false;
   saveConfig();
+});
+
+// ─── Glossary ────────────────────────────────────────────────────────────────
+
+let _glossary = [];
+
+function _esc(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function loadGlossary() {
+  try {
+    const r = await fetch('/api/glossary');
+    _glossary = await r.json();
+  } catch(e) { _glossary = []; }
+  renderGlossaryTable();
+}
+
+function renderGlossaryTable() {
+  const tbody = $('glossary-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (_glossary.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="glossary-empty">${t('gloss_empty')}</td></tr>`;
+    return;
+  }
+
+  _glossary.forEach((entry, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input class="gloss-cell" data-field="source" value="${_esc(entry.source)}"></td>
+      <td><input class="gloss-cell" data-field="target" value="${_esc(entry.target)}"></td>
+      <td><input class="gloss-cell" data-field="note"   value="${_esc(entry.note||'')}"></td>
+      <td><button class="gloss-del" title="Delete">×</button></td>
+    `;
+    tbody.appendChild(tr);
+
+    tr.querySelectorAll('.gloss-cell').forEach(inp => {
+      inp.addEventListener('change', async () => {
+        _glossary[idx][inp.dataset.field] = inp.value;
+        await fetch(`/api/glossary/${idx}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(_glossary[idx]),
+        });
+      });
+    });
+
+    tr.querySelector('.gloss-del').addEventListener('click', async () => {
+      await fetch(`/api/glossary/${idx}`, { method: 'DELETE' });
+      _glossary.splice(idx, 1);
+      renderGlossaryTable();
+    });
+  });
+}
+
+$('btn-gloss-add').addEventListener('click', async () => {
+  const src  = $('gloss-new-src').value.trim();
+  const tgt  = $('gloss-new-tgt').value.trim();
+  const note = $('gloss-new-note').value.trim();
+  if (!src || !tgt) return;
+  await fetch('/api/glossary', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: src, target: tgt, note }),
+  });
+  $('gloss-new-src').value = '';
+  $('gloss-new-tgt').value = '';
+  $('gloss-new-note').value = '';
+  $('gloss-new-src').focus();
+  await loadGlossary();
+});
+
+['gloss-new-src', 'gloss-new-tgt', 'gloss-new-note'].forEach(id => {
+  $(id).addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-gloss-add').click(); });
+});
+
+$('btn-gloss-export').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(_glossary, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kotoba_glossary.json';
+  a.click();
+});
+
+$('btn-gloss-import').addEventListener('click', () => $('gloss-import-file').click());
+
+$('gloss-import-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  let entries;
+  try { entries = JSON.parse(await file.text()); } catch { alert('Invalid JSON'); return; }
+  if (!Array.isArray(entries)) { alert('Expected a JSON array'); return; }
+  for (const en of entries) {
+    if (en.source && en.target) {
+      await fetch('/api/glossary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(en),
+      });
+    }
+  }
+  e.target.value = '';
+  await loadGlossary();
 });
 
 // Initial render

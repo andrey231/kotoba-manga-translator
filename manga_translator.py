@@ -49,6 +49,10 @@ MAX_FONT_SIZE:     int   = 90     # максимальный размер шри
 INPAINT_SHRINK:    int   = 1      # отступ маски инпейтинга от края bbox (px)
 TRANSLATE_CHUNK_SIZE: int = 5     # баблов за один LLM-запрос
 TRANSLATE_RETRIES: int   = 3      # повторных попыток при ошибке LLM
+
+# Глоссарий терминов: [{source, target, note}, ...].
+# Устанавливается через web.py при старте и при каждом изменении.
+GLOSSARY: list[dict] = []
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
 BUBBLE_MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
@@ -426,6 +430,59 @@ def clean_text(text: str) -> str:
     # Убираем лишние пустые строки (3+ подряд → 2)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _build_glossary_prompt() -> str:
+    """Форматирует глоссарий для вставки в промпт перевода."""
+    if not GLOSSARY:
+        return ""
+    lines = ["GLOSSARY — always use these exact translations, even if context suggests otherwise:"]
+    for entry in GLOSSARY:
+        src = entry.get("source", "").strip()
+        tgt = entry.get("target", "").strip()
+        if not src or not tgt:
+            continue
+        note = entry.get("note", "").strip()
+        line = f"  {src} → {tgt}"
+        if note:
+            line += f"  ({note})"
+        lines.append(line)
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _infer_emotion_tag(text: str) -> str:
+    """
+    Определяет эмоциональный тег реплики по пунктуации и паттернам OCR-текста.
+    Результат хранится в bubble["emotion_hint"] и передаётся в промпт перевода,
+    чтобы LLM воспроизвёл не только смысл, но и эмоциональную интенсивность.
+    """
+    # Нормализуем полноширинные знаки → ASCII для единого анализа
+    t = text.replace('！', '!').replace('？', '?').replace('…', '...')
+
+    has_double_excl = bool(re.search(r'!{2,}', t))
+    has_excl        = '!' in t
+    has_question    = '?' in t
+    has_mixed       = bool(re.search(r'[?!][!?]', t))   # ?! или !?
+    has_ellipsis    = '...' in t or '…' in text
+    # Звукоподражания и эхо-повторы (ドキドキ, はは, aha-ha и т.п.)
+    has_repetition  = bool(re.search(r'(.{2,4})\1', text))
+    all_caps        = (text.replace(' ', '').replace('\n', '').isupper()
+                       and len(text.strip()) > 2)
+
+    if has_double_excl or (has_excl and has_repetition):
+        return "excited/shouting"
+    if has_mixed:
+        return "shocked/alarmed"
+    if has_ellipsis and not has_excl:
+        return "hesitant/trailing-off"
+    if has_excl:
+        return "emphatic"
+    if has_question:
+        return "questioning"
+    if all_caps:
+        return "loud/sfx"
+    return "neutral"
+
 
 # Глобальный флаг подробного логирования всех LLM-запросов.
 # Когда True — каждый вызов ollama() пишет в stdout полный prompt и ответ.
@@ -1135,6 +1192,7 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
                 "speaker": spk,
                 "gender": gen,
                 "text": txt,
+                "emotion": "neutral",
                 "_padding": True,   # маркер — потом мы это отфильтруем
             })
 
@@ -1144,6 +1202,7 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
             "speaker": b["speaker"],
             "gender": gender_hints.get(b["gender"], "gender unknown"),
             "text": b["text"],
+            "emotion": b.get("emotion_hint", "neutral"),
         }
         for i, (_, b) in enumerate(chunk)
     ] + [{k: v for k, v in e.items() if k != "_padding"} for e in padding_entries]
@@ -1163,16 +1222,29 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
     dyn_predict = 6000
 
     n = total   # включая padding, чтобы модель видела согласованное число
+    _glossary_section = _build_glossary_prompt()
     prompt = f"""You are translating manga content to {target_lang}.
 
 {manga_ctx.to_prompt()}
 
 PAGE CONTEXT:
 {page_context}
+{(chr(10) + _glossary_section + chr(10)) if _glossary_section else ""}
+EMOTION GUIDE — each bubble has an "emotion" field inferred from punctuation.
+Match the emotional INTENSITY of the original, not just the literal meaning:
+- "excited/shouting"      → energetic vocabulary, exclamation marks (e.g. «Невероятно!!» not «Я рада»)
+- "shocked/alarmed"       → express clear urgency or surprise (e.g. «Что?!», «Не может быть!»)
+- "hesitant/trailing-off" → trailing «...», incomplete or softened phrasing
+- "emphatic"              → strong word choice, keep the exclamation mark
+- "questioning"           → preserve the inquisitive intonation
+- "loud/sfx"              → all-caps or emphatic equivalents for sound effects
+- "neutral"               → natural conversational register
 
 You will receive a JSON array of {n} text bubbles. For EACH bubble translate
 the ENTIRE text content:
-- Dialogue: match the speaker's personality and gender, preserve emotion and register.
+- Dialogue: match the speaker's personality and gender. Preserve both the emotional
+  register and its intensity — a bubble tagged "excited/shouting" must feel
+  exciting in the translation, not merely semantically correct.
 - Sound effects (PANT, HUFF, TCH, AHH, EEK, etc.): produce a natural equivalent in {target_lang}.
 - Announcements, credits, cast/staff lists, copyright notices: translate ALL lines
   faithfully — do NOT summarize, omit, or shorten. Keep proper names (people,
@@ -1282,17 +1354,22 @@ def _translate_persistent(bubble: dict, page_context: str,
     speaker = bubble.get("speaker", "unknown")
     gender = bubble.get("gender", "unknown")
     gender_h = gender_hints.get(gender, "gender unknown")
+    emotion = bubble.get("emotion_hint", "neutral")
+    _gloss_p = _build_glossary_prompt()
 
     # 3 стратегии — от самой структурированной до самой минималистичной.
     # Эмпирически: если ни одна не сработает, дополнительные попытки тоже
     # не помогут (модель действительно застряла), только теряем время.
     strategies = [
-        # 1. С минимальным контекстом — speaker + текст
+        # 1. С минимальным контекстом — speaker + emotion + glossary + текст
         ("ctx-speaker", lambda: (
             f"Translate this manga text to {target_lang}.\n"
-            f"Speaker: {speaker} ({gender_h}).\n"
-            f"Source: {text}\n\n"
-            f"Rules: keep proper nouns, titles, and names unchanged. "
+            f"Speaker: {speaker} ({gender_h}). Tone/emotion: {emotion}.\n"
+            + (f"{_gloss_p}\n" if _gloss_p else "")
+            + f"Source: {text}\n\n"
+            f"Rules: match the emotional intensity of the original "
+            f"('{emotion}' means the translation must feel {emotion}). "
+            f"Keep proper nouns, titles, and names unchanged. "
             f"Output ONLY the translated text. No quotes. No explanations."
         )),
         # 2. UI-style — как пользователь написал бы в Ollama UI
@@ -2656,6 +2733,7 @@ def process_page(image_path: str, page_idx: int,
     for i, b in enumerate(text_bubbles):
         b["text"] = ocr_region(img_cv, b["x"], b["y"], b["width"], b["height"],
                                idx=i + 1, page_idx=page_idx)
+        b["emotion_hint"] = _infer_emotion_tag(b.get("text", ""))
         if not b["text"] and errors:
             errors.add(page_idx, "ocr_empty",
                        f"Bubble #{i+1}: OCR returned no text after two passes",

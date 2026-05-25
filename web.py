@@ -33,9 +33,28 @@ BASE_DIR = Path("web_data")
 UPLOADS_DIR = BASE_DIR / "uploads"
 RESULTS_DIR = BASE_DIR / "results"
 JOBS_DIR = BASE_DIR / "jobs"          # bubbles.json по каждому job_id
+GLOSSARY_FILE = BASE_DIR / "glossary.json"
 
 for d in (UPLOADS_DIR, RESULTS_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+
+def _load_glossary() -> list:
+    if GLOSSARY_FILE.exists():
+        try:
+            return json.loads(GLOSSARY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_glossary(entries: list) -> None:
+    GLOSSARY_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    mt.GLOSSARY = entries
+
+
+# Загружаем глоссарий в память translator'а при старте
+mt.GLOSSARY = _load_glossary()
 
 # Активные джобы: job_id → {"status", "pages", "stats", "ws_queue"}
 JOBS: dict = {}
@@ -643,6 +662,203 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     return {"ok": True, "url": f"/files/results/{job_id}/{out_path.name}"}
 
 
+# ─── детекция в выделенной области ──────────────────────────────────────────
+
+@app.post("/api/job/{job_id}/page/{page_idx}/detect-region")
+async def detect_region(job_id: str, page_idx: int, payload: dict):
+    """
+    Детектирует баблы в выделенной пользователем области, запускает полный
+    пайплайн (OCR → маски → перевод → инпейтинг → отрисовка) и возвращает
+    новые баблы + обновлённый URL результата.
+    payload: {"x": int, "y": int, "w": int, "h": int}
+    """
+    job_file = JOBS_DIR / f"{job_id}.json"
+    if not job_file.exists():
+        raise HTTPException(404, "Job not found")
+
+    pages = json.loads(job_file.read_text(encoding="utf-8"))
+    page = next((p for p in pages if p["page"] == page_idx), None)
+    if not page:
+        raise HTTPException(404, "Page not found")
+
+    rx = int(payload.get("x", 0))
+    ry = int(payload.get("y", 0))
+    rw = int(payload.get("w", 0))
+    rh = int(payload.get("h", 0))
+    if rw < 10 or rh < 10:
+        raise HTTPException(400, "Region too small (min 10×10 px)")
+
+    cfg = JOBS.get(job_id, {}).get("config", {})
+    target_lang        = cfg.get("target_lang", "Russian")
+    font_path          = cfg.get("font_path", mt.DEFAULT_FONT)
+    detect_threshold   = float(cfg.get("detect_threshold", mt.DETECT_THRESHOLD))
+    min_bubble_area    = int(cfg.get("min_bubble_area", mt.MIN_BUBBLE_AREA))
+    translate_retries  = int(cfg.get("translate_retries", mt.TRANSLATE_RETRIES))
+
+    upload_dir = UPLOADS_DIR / job_id
+    result_dir = RESULTS_DIR / job_id
+    src_path   = upload_dir / page["filename"]
+
+    def _run():
+        import cv2
+        import numpy as np
+        from PIL import Image as PILImage
+
+        img_cv = cv2.imread(str(src_path))
+        if img_cv is None:
+            img_cv = cv2.imdecode(
+                np.fromfile(str(src_path), dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+        if img_cv is None:
+            raise ValueError("Cannot read source image")
+
+        ih, iw = img_cv.shape[:2]
+        # Зажимаем регион в границах изображения
+        x0 = max(0, min(rx, iw - 1))
+        y0 = max(0, min(ry, ih - 1))
+        x1 = min(iw, x0 + rw)
+        y1 = min(ih, y0 + rh)
+        cw, ch = x1 - x0, y1 - y0
+
+        # ── 1. Детекция на ресайзнутом кропе (640×640) ───────────────────────
+        DET = 640
+        crop_cv = img_cv[y0:y1, x0:x1]
+        resized = cv2.resize(crop_cv, (DET, DET), interpolation=cv2.INTER_LINEAR)
+        crop_pil = PILImage.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
+
+        raw = mt.detect_bubbles(crop_pil, threshold=detect_threshold)
+        if not raw:
+            return {"ok": True, "new_bubbles": [], "url": None}
+
+        # Масштабируем координаты 640×640 → исходное изображение
+        sx, sy = cw / DET, ch / DET
+        for b in raw:
+            b["x"]      = max(0, min(round(b["x"]      * sx) + x0, iw - 1))
+            b["y"]      = max(0, min(round(b["y"]      * sy) + y0, ih - 1))
+            b["width"]  = max(1, min(round(b["width"]  * sx), iw - b["x"]))
+            b["height"] = max(1, min(round(b["height"] * sy), ih - b["y"]))
+
+        raw = [b for b in raw if b["width"] * b["height"] >= min_bubble_area]
+        if not raw:
+            return {"ok": True, "new_bubbles": [], "url": None}
+
+        # Уникальные idx (продолжаем нумерацию существующих баблов)
+        max_idx = max((b["idx"] for b in page["bubbles"]), default=0)
+        for i, b in enumerate(raw):
+            b.update(idx=max_idx + i + 1, text="", translation="",
+                     speaker="unknown", gender="unknown",
+                     font_path=font_path, font_size=None,
+                     _text_color=None, _sam2_mask=None, _text_angle=0.0)
+
+        # ── 2. OCR ───────────────────────────────────────────────────────────
+        crops_dir = result_dir / "crops"
+        crops_dir.mkdir(exist_ok=True)
+        mt.CROPS_DIR = str(crops_dir)
+
+        for b in raw:
+            b["text"] = mt.ocr_region(
+                img_cv, b["x"], b["y"], b["width"], b["height"],
+                b["idx"], page_idx,
+            )
+            b["emotion_hint"] = mt._infer_emotion_tag(b.get("text", ""))
+
+        text_bubbles = [b for b in raw if b.get("text", "").strip()]
+
+        # ── 3. Маски + цвет — вычисляем из источника ─────────────────────────
+        # _compute_text_masks пропускает баблы с пустым translation,
+        # поэтому временно ставим placeholder перед переводом.
+        for b in text_bubbles:
+            b["translation"] = b["text"]
+        mt._compute_text_masks(img_cv, text_bubbles)
+        for b in text_bubbles:
+            b["translation"] = ""
+            if b.get("_text_color") is None:
+                b["_text_color"] = mt.detect_text_color(img_cv, b)
+
+        # ── 4. Перевод ───────────────────────────────────────────────────────
+        dummy_ctx = mt.MangaContext()
+        if text_bubbles:
+            mt.translate_batch(
+                text_bubbles, "", dummy_ctx, target_lang,
+                retries=translate_retries,
+            )
+
+        # ── 5. Отрисовка поверх текущего результата ───────────────────────────
+        out_path = result_dir / f"{Path(page['filename']).stem}_translated.png"
+        if out_path.exists():
+            base_cv = cv2.imread(str(out_path))
+            if base_cv is None:
+                base_cv = img_cv.copy()
+        else:
+            base_cv = img_cv.copy()
+
+        bubbles_for_draw = [
+            {
+                "x": b["x"], "y": b["y"],
+                "width": b["width"], "height": b["height"],
+                "text": b.get("text", ""),
+                "translation": b.get("translation", ""),
+                "speaker": b.get("speaker", ""),
+                "gender": b.get("gender", ""),
+                "font_path": b.get("font_path"),
+                "font_size": None,
+                "_text_color": b.get("_text_color"),
+                "_sam2_mask":  b.get("_sam2_mask"),
+                "class": b.get("class", "text_bubble"),
+                "bold": False, "italic": False, "underline": False,
+                "text_align": "center",
+                "outline_color": None, "outline_width": 0,
+                "_text_angle": b.get("_text_angle", 0.0),
+            }
+            for b in raw if b.get("translation")
+        ]
+
+        if bubbles_for_draw:
+            annotated = mt.draw_results(base_cv, bubbles_for_draw, debug=False)
+            cv2.imwrite(str(out_path), annotated)
+
+        # ── 6. Сохраняем в JSON джоба ─────────────────────────────────────────
+        def _color(c):
+            return list(c) if c else None
+
+        new_page_bubbles = [
+            {
+                "idx": b["idx"],
+                "x": b["x"], "y": b["y"],
+                "w": b["width"], "h": b["height"],
+                "orig_w": b["width"], "orig_h": b["height"],
+                "text": b.get("text", ""),
+                "translation": b.get("translation", ""),
+                "speaker": b.get("speaker", "unknown"),
+                "gender": b.get("gender", "unknown"),
+                "font_path": None,
+                "font_size": None,
+                "text_color": _color(b.get("_text_color")),
+                "class": b.get("class", "text_bubble"),
+                "_text_angle": b.get("_text_angle", 0.0),
+            }
+            for b in raw
+        ]
+
+        page["bubbles"].extend(new_page_bubbles)
+        job_file.write_text(
+            json.dumps(pages, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        try:
+            rel = out_path.resolve().relative_to(BASE_DIR.resolve())
+            url = f"/files/{rel.as_posix()}"
+        except Exception:
+            url = None
+
+        return {"ok": True, "new_bubbles": new_page_bubbles, "url": url}
+
+    try:
+        return await asyncio.to_thread(_run)
+    except ValueError as e:
+        raise HTTPException(500, str(e))
+
+
 # ─── архив персонажей ─────────────────────────────────────────────────────────
 
 @app.get("/api/job/{job_id}/export")
@@ -742,6 +958,49 @@ async def delete_character(char_id: str):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                      encoding="utf-8")
     return {"ok": True}
+
+
+# ─── глоссарий ───────────────────────────────────────────────────────────────
+
+@app.get("/api/glossary")
+async def get_glossary():
+    return _load_glossary()
+
+
+@app.post("/api/glossary")
+async def add_glossary_entry(payload: dict):
+    source = payload.get("source", "").strip()
+    target = payload.get("target", "").strip()
+    if not source or not target:
+        raise HTTPException(400, "source and target are required")
+    entries = _load_glossary()
+    entries.append({"source": source, "target": target, "note": payload.get("note", "").strip()})
+    _save_glossary(entries)
+    return {"ok": True, "count": len(entries)}
+
+
+@app.put("/api/glossary/{idx}")
+async def update_glossary_entry(idx: int, payload: dict):
+    entries = _load_glossary()
+    if idx < 0 or idx >= len(entries):
+        raise HTTPException(404, "Entry not found")
+    source = payload.get("source", "").strip()
+    target = payload.get("target", "").strip()
+    if not source or not target:
+        raise HTTPException(400, "source and target are required")
+    entries[idx] = {"source": source, "target": target, "note": payload.get("note", "").strip()}
+    _save_glossary(entries)
+    return {"ok": True}
+
+
+@app.delete("/api/glossary/{idx}")
+async def delete_glossary_entry(idx: int):
+    entries = _load_glossary()
+    if idx < 0 or idx >= len(entries):
+        raise HTTPException(404, "Entry not found")
+    entries.pop(idx)
+    _save_glossary(entries)
+    return {"ok": True, "count": len(entries)}
 
 
 if __name__ == "__main__":
