@@ -1484,8 +1484,13 @@ def _clean_translation(raw: str) -> str:
 def preprocess_crop(img_cv: np.ndarray, x: int, y: int,
                     w: int, h: int) -> np.ndarray:
     """Вырезает регион, масштабирует ×3, выравнивает контраст, добавляет отступ."""
-    crop = img_cv[y:y+h, x:x+w]
+    ih, iw = img_cv.shape[:2]
+    x, y = max(0, x), max(0, y)
+    x2, y2 = min(iw, x + w), min(ih, y + h)
+    crop = img_cv[y:y2, x:x2]
     h2, w2 = crop.shape[:2]
+    if h2 == 0 or w2 == 0:
+        return np.full((128, 128), 255, dtype=np.uint8)
     crop = cv2.resize(crop, (w2 * 3, h2 * 3), interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -1501,8 +1506,13 @@ def preprocess_crop_minimal(img_cv: np.ndarray, x: int, y: int,
     Помогает на коротких репликах и SFX, которые agressive-препроцессинг
     может «съесть».
     """
-    crop = img_cv[y:y+h, x:x+w]
+    ih, iw = img_cv.shape[:2]
+    x, y = max(0, x), max(0, y)
+    x2, y2 = min(iw, x + w), min(ih, y + h)
+    crop = img_cv[y:y2, x:x2]
     h2, w2 = crop.shape[:2]
+    if h2 == 0 or w2 == 0:
+        return np.full((64, 64, 3), 255, dtype=np.uint8)
     # Скромное увеличение ×2 вместо ×3
     crop = cv2.resize(crop, (w2 * 2, h2 * 2), interpolation=cv2.INTER_CUBIC)
     # Цветной с небольшим белым паддингом
@@ -1771,7 +1781,7 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
     Определяет цвет текста в бабле.
 
     Приоритет:
-    1. SAM2-маска (если доступна) — точные пиксели текста/
+    1. SAM2-маска (если доступна) — точные пиксели текста
     2. Маленький text_free (логотип) → HSV-насыщенность
     3. Fallback: Оцу + sanity-check
     """
