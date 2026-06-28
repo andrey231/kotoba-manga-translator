@@ -53,6 +53,14 @@ TRANSLATE_RETRIES: int   = 3
 _LARGE_BUBBLE_PX = 80_000
 _INPAINT_MAX_PIXELS = 12_000_000
 
+READING_BAND_MIN = 40
+READING_BAND_DIVISOR = 25
+SFX_OVERLAP_FRAC = 0.3
+CTD_MIN_COVERAGE = 0.05
+INK_DARK_PERCENTILE = 25
+INK_LIGHT_PERCENTILE = 75
+BALANCED_LINE_TOLERANCE = 1.3
+
 GLOSSARY: list[dict] = []
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
@@ -1527,10 +1535,10 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
             bg_gray = float(np.mean(bg_pix)) if len(bg_pix) > 0 else float(np.mean(crop_gray))
             gray_vals = np.mean(text_pixels.astype(np.float32), axis=1)
             if bg_gray >= 128:
-                thr = min(float(np.percentile(gray_vals, 25)), 110)
+                thr = min(float(np.percentile(gray_vals, INK_DARK_PERCENTILE)), 110)
                 ink = text_pixels[gray_vals <= thr]
             else:
-                thr = max(float(np.percentile(gray_vals, 75)), 150)
+                thr = max(float(np.percentile(gray_vals, INK_LIGHT_PERCENTILE)), 150)
                 ink = text_pixels[gray_vals >= thr]
             if len(ink) >= 5:
                 bv, gv, rv = np.median(ink, axis=0).astype(int)
@@ -1599,7 +1607,7 @@ def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict],
         if sam2_mask is not None:
             crop_m = sam2_mask[y0:y1, x0:x1]
             coverage = np.count_nonzero(crop_m) / max(crop_m.size, 1)
-            if coverage >= 0.05 and crop_m.any():
+            if coverage >= CTD_MIN_COVERAGE and crop_m.any():
                 closed = cv2.morphologyEx(crop_m, cv2.MORPH_CLOSE, closing_k)
                 glyph  = cv2.dilate(closed, inpaint_k)
 
@@ -1782,7 +1790,8 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
             test = (line + " " + word).strip()
             if not line:
                 line = word
-            elif len(test) <= target_line_chars * 1.3 and text_width(test, font) <= usable_w:
+            elif (len(test) <= target_line_chars * BALANCED_LINE_TOLERANCE
+                  and text_width(test, font) <= usable_w):
                 line = test
             else:
                 lines.append(line)
@@ -2213,14 +2222,14 @@ def process_page(image_path: str, page_idx: int,
         bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
         covered = any(
             max(0, min(bx + bw, e["x"] + e["width"])  - max(bx, e["x"])) *
-            max(0, min(by + bh, e["y"] + e["height"]) - max(by, e["y"])) > 0.3 * bw * bh
+            max(0, min(by + bh, e["y"] + e["height"]) - max(by, e["y"])) > SFX_OVERLAP_FRAC * bw * bh
             for e in bubbles
         )
         if not covered:
             bubbles.append(b)
             print(f"  [sfx+] text_free @ ({bx},{by}) score={b['confidence']:.2f}")
     bubbles = _clip_overlapping_boxes(bubbles, min_area=MIN_BUBBLE_AREA)
-    band = max(40, img_cv.shape[0] // 25)
+    band = max(READING_BAND_MIN, img_cv.shape[0] // READING_BAND_DIVISOR)
     text_bubbles = sorted(
         [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
         key=lambda b: reading_order(b, band),
