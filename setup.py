@@ -131,8 +131,11 @@ def launch_server():
 
     threading.Thread(target=open_browser, daemon=True).start()
 
+    # Слушаем только localhost по умолчанию (нет аутентификации). Открыть в
+    # локальную сеть осознанно: KOTOBA_HOST=0.0.0.0 перед запуском.
+    host = os.environ.get("KOTOBA_HOST", "127.0.0.1")
     try:
-        uvicorn.run("web:app", host="0.0.0.0", port=8000, log_level="info")
+        uvicorn.run("web:app", host=host, port=8000, log_level="info")
     except KeyboardInterrupt:
         print("\n" + DIM + "Server stopped." + RESET)
 

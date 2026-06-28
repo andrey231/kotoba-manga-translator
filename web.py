@@ -10,10 +10,10 @@ web.py
 
 import io
 import os
+import re
 import json
 import shutil
 import asyncio
-import tempfile
 import threading
 import uuid
 import zipfile
@@ -37,6 +37,35 @@ GLOSSARY_FILE = BASE_DIR / "glossary.json"
 
 for d in (UPLOADS_DIR, RESULTS_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+
+# Потолок суммарного размера распакованного архива — защита от zip-бомбы.
+_MAX_EXTRACT_BYTES = 4 * 1024 ** 3   # 4 GB
+
+_JOB_ID_RE = re.compile(r"[0-9a-f]{6,32}")
+
+
+def _safe_id(job_id: str) -> str:
+    """
+    Валидирует job_id перед использованием в путях. job_id генерируется как
+    uuid4().hex[:12] (только hex), поэтому всё, что не совпадает с этим
+    шаблоном, отвергаем — иначе значения вроде '..' или 'a/../b' могли бы
+    увести чтение/запись за пределы web_data (path traversal).
+    """
+    if not _JOB_ID_RE.fullmatch(job_id):
+        raise HTTPException(400, "Invalid job_id")
+    return job_id
+
+
+def _hex_to_rgb(value: str | None) -> list[int] | None:
+    """'#rrggbb' → [r,g,b]; None/некорректный hex → None."""
+    h = (value or "").lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+    except ValueError:
+        return None
 
 
 def _load_glossary() -> list:
@@ -319,6 +348,7 @@ async def upload_chapter(
     upload_dir.mkdir(parents=True, exist_ok=True)
     result_dir.mkdir(parents=True, exist_ok=True)
 
+    extracted_total = 0   # суммарный объём распакованного — защита от zip-бомбы
     for f in files:
         ext = Path(f.filename).suffix.lower()
         if ext in {'.zip', '.cbz'}:
@@ -332,6 +362,12 @@ async def upload_chapter(
                         continue
                     if Path(name).suffix.lower() not in mt.SUPPORTED_EXTENSIONS:
                         continue
+                    extracted_total += entry.file_size
+                    if extracted_total > _MAX_EXTRACT_BYTES:
+                        raise HTTPException(
+                            413, "Archive too large when decompressed "
+                                 f"(> {_MAX_EXTRACT_BYTES // (1024**3)} GB)")
+                    # name — только basename, поэтому zip-slip исключён
                     (upload_dir / name).write_bytes(zf.read(entry))
         elif ext in mt.SUPPORTED_EXTENSIONS:
             target = upload_dir / f.filename
@@ -527,12 +563,9 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 if event.get("type") == "finish":
                     break
     except WebSocketDisconnect:
-        # Клиент отключился (закрыл вкладку или нажал Abort) — останавливаем перевод
+        # Клиент отключился (закрыл вкладку или нажал Abort) — останавливаем перевод.
+        # Текущая страница дообработается, cancel_event остановит следующую.
         job["cancel_event"].set()
-    finally:
-        if runner_task and not runner_task.done():
-            # Даём текущей странице дообработаться, cancel_event остановит следующую
-            pass
 
 
 # ─── отмена джоба ────────────────────────────────────────────────────────────
@@ -540,6 +573,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
 @app.post("/api/job/{job_id}/abort")
 async def abort_job(job_id: str):
     """Устанавливает cancel_event — перевод остановится после текущей страницы."""
+    _safe_id(job_id)
     if job_id not in JOBS:
         raise HTTPException(404, "Job not found")
     JOBS[job_id]["cancel_event"].set()
@@ -552,6 +586,7 @@ async def abort_job(job_id: str):
 @app.get("/api/job/{job_id}")
 async def get_job(job_id: str):
     """Возвращает все страницы джоба с баблами для редактора."""
+    _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
         raise HTTPException(404, "Job not found")
@@ -564,6 +599,7 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     Перерисовывает страницу с обновлёнными переводами.
     payload: {"bubbles": [{"idx": 1, "translation": "новый перевод"}, ...]}
     """
+    _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
         raise HTTPException(404, "Job not found")
@@ -586,12 +622,11 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
             if "font_size" in u:
                 b["font_size"] = u["font_size"] if u["font_size"] else None
             if "text_color" in u:
-                hex_color = (u["text_color"] or "").lstrip("#")
-                if len(hex_color) == 6:
-                    b["text_color"] = [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
+                rgb = _hex_to_rgb(u.get("text_color"))
+                if rgb is not None:
+                    b["text_color"] = rgb
             if "outline_color" in u:
-                hex_oc = (u.get("outline_color") or "").lstrip("#")
-                b["outline_color"] = [int(hex_oc[i:i+2], 16) for i in (0, 2, 4)] if len(hex_oc) == 6 else None
+                b["outline_color"] = _hex_to_rgb(u.get("outline_color"))
             if "outline_width" in u:
                 b["outline_width"] = int(u.get("outline_width") or 0)
             for flag in ("bold", "italic", "underline"):
@@ -621,11 +656,10 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     src_path = upload_dir / page["filename"]
 
     import cv2
-    import numpy as np
-    img_cv = cv2.imread(str(src_path))
-    if img_cv is None:
-        img_cv = cv2.imdecode(np.fromfile(str(src_path), dtype=np.uint8),
-                              cv2.IMREAD_COLOR)
+    try:
+        img_cv = mt.read_image(str(src_path))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
     # Восстанавливаем структуру bubbles в формате draw_results
     bubbles_for_draw = [
@@ -672,6 +706,7 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
     новые баблы + обновлённый URL результата.
     payload: {"x": int, "y": int, "w": int, "h": int}
     """
+    _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
         raise HTTPException(404, "Job not found")
@@ -701,16 +736,9 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
 
     def _run():
         import cv2
-        import numpy as np
         from PIL import Image as PILImage
 
-        img_cv = cv2.imread(str(src_path))
-        if img_cv is None:
-            img_cv = cv2.imdecode(
-                np.fromfile(str(src_path), dtype=np.uint8), cv2.IMREAD_COLOR
-            )
-        if img_cv is None:
-            raise ValueError("Cannot read source image")
+        img_cv = mt.read_image(str(src_path))
 
         ih, iw = img_cv.shape[:2]
         # Зажимаем регион в границах изображения
@@ -871,6 +899,7 @@ async def export_job(job_id: str, fmt: str = "zip"):
     if fmt not in ("zip", "cbz"):
         raise HTTPException(400, "fmt must be 'zip' or 'cbz'")
 
+    _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
         raise HTTPException(404, "Job not found")
@@ -1005,4 +1034,10 @@ async def delete_glossary_entry(idx: int):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # По умолчанию слушаем только localhost — у приложения нет аутентификации,
+    # и на 0.0.0.0 любой в локальной сети получил бы доступ к чужим сканам,
+    # персонажам и файлам web_data. Чтобы открыть наружу осознанно:
+    #   KOTOBA_HOST=0.0.0.0 python web.py
+    host = os.environ.get("KOTOBA_HOST", "127.0.0.1")
+    port = int(os.environ.get("KOTOBA_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)

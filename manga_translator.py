@@ -19,6 +19,14 @@ Kotoba — manga translator with character memory.
 """
 
 import os
+
+# Снимаем лимит OpenCV на размер изображения ДО импорта cv2. По умолчанию
+# OpenCV отказывается декодировать изображения больше ~1 млрд пикселей и
+# imread/imdecode молча возвращают None — это роняло пайплайн на больших
+# страницах (длинные вебтун-полосы, сканы в высоком DPI). Ставим высокий
+# потолок, чтобы такие страницы читались, а не падали.
+os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(2 ** 40))
+
 import re
 import json
 import time
@@ -49,6 +57,13 @@ MAX_FONT_SIZE:     int   = 90     # максимальный размер шри
 INPAINT_SHRINK:    int   = 1      # отступ маски инпейтинга от края bbox (px)
 TRANSLATE_CHUNK_SIZE: int = 5     # баблов за один LLM-запрос
 TRANSLATE_RETRIES: int   = 3      # повторных попыток при ошибке LLM
+
+# Порог площади бабла (px²), выше которого используется глифовая маска,
+# а не полный bbox (при инпейтинге и определении цвета текста).
+_LARGE_BUBBLE_PX = 80_000
+# Потолок числа пикселей страницы для LaMa-инпейтинга. Выше — cv2.inpaint,
+# чтобы не ловить CUDA OOM на огромных страницах.
+_INPAINT_MAX_PIXELS = 12_000_000
 
 # Глоссарий терминов: [{source, target, note}, ...].
 # Устанавливается через web.py при старте и при каждом изменении.
@@ -118,8 +133,31 @@ def load_detector():
     model.eval()
     return processor, model
 
-inpaint_model = load_inpainting_model()
-detector_processor, detector_model = load_detector()
+
+# Модели грузятся лениво — при первом обращении, а не на import. Иначе любой
+# `import manga_translator` (тесты, CLI-хелперы, линтер) тянул бы веса с
+# HuggingFace и занимал VRAM ещё до начала перевода.
+_inpaint_model = None
+_inpaint_loaded = False
+_detector_processor = None
+_detector_model = None
+
+
+def get_inpaint_model():
+    """Ленивый доступ к LaMa. Возвращает модель или None (если недоступна)."""
+    global _inpaint_model, _inpaint_loaded
+    if not _inpaint_loaded:
+        _inpaint_model = load_inpainting_model()
+        _inpaint_loaded = True
+    return _inpaint_model
+
+
+def get_detector():
+    """Ленивый доступ к детектору баблов. Возвращает (processor, model)."""
+    global _detector_processor, _detector_model
+    if _detector_model is None:
+        _detector_processor, _detector_model = load_detector()
+    return _detector_processor, _detector_model
 
 # SAM predictor — lazy-loaded on first use.
 # SAM2 ломается в embedded Python (Hydra вызывает inspect.getsource на C-функциях).
@@ -414,6 +452,28 @@ def image_to_base64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
+
+def read_image(path: str) -> np.ndarray:
+    """
+    Читает изображение в BGR-массив OpenCV.
+
+    Сначала пробует cv2.imread; если он вернул None (не-ASCII путь, особый
+    формат) — пробует imdecode через np.fromfile. Если оба не справились —
+    бросает ValueError с понятным сообщением, чтобы пайплайн не падал позже
+    на cvtColor(None) с невнятной ошибкой.
+    """
+    img = cv2.imread(path)
+    if img is None:
+        try:
+            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            img = None
+    if img is None:
+        raise ValueError(
+            f"Cannot decode image (corrupt, unsupported, or exceeds pixel limit): {path}"
+        )
+    return img
+
 def clean_text(text: str) -> str:
     """Убирает markdown-артефакты и лишние пробелы, сохраняя переносы строк."""
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
@@ -556,7 +616,7 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
     global _OLLAMA_CALL_NUM
     import random
 
-    def _call(opts: dict, label: str, model: str) -> str:
+    def _call(opts: dict, model: str) -> str:
         global _OLLAMA_CALL_NUM
         _OLLAMA_CALL_NUM += 1
         call_num = _OLLAMA_CALL_NUM
@@ -579,7 +639,7 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
     # Попытка 1: запрошенные параметры, текущая модель
     response = _call(
         {"temperature": temperature, "num_predict": num_predict},
-        "primary", model_name,
+        model_name,
     )
     if response:
         return response
@@ -589,7 +649,7 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
     response = _call(
         {"temperature": temperature, "num_predict": num_predict,
          "seed": random.randint(1, 100000)},
-        "retry-seed", model_name,
+        model_name,
     )
     if response:
         print(f"     [ollama-retry-ok] recovered with new seed")
@@ -606,7 +666,7 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
         try:
             response = _call(
                 {"temperature": temperature, "num_predict": num_predict},
-                f"fallback-{fb_model}", fb_model,
+                fb_model,
             )
         except Exception as e:
             print(f"     [ollama-fallback] {fb_model} error: {e}")
@@ -1595,11 +1655,12 @@ def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
 
 def detect_bubbles(image_pil: Image.Image, threshold: float = 0.5) -> list[dict]:
     """Принимает уже загруженный PIL-объект — файл не читается повторно."""
+    processor, model = get_detector()
     w, h = image_pil.size
-    inputs = detector_processor(images=image_pil, return_tensors="pt")
+    inputs = processor(images=image_pil, return_tensors="pt")
     with torch.no_grad():
-        outputs = detector_model(**inputs)
-    results = detector_processor.post_process_object_detection(
+        outputs = model(**inputs)
+    results = processor.post_process_object_detection(
         outputs, target_sizes=torch.tensor([[h, w]]), threshold=threshold,
     )[0]
 
@@ -1615,6 +1676,36 @@ def detect_bubbles(image_pil: Image.Image, threshold: float = 0.5) -> list[dict]
             "gender": "unknown",
         })
     return bubbles
+
+
+def _largest_subrect(bx: int, by: int, bw: int, bh: int,
+                     ox: int, oy: int, ow: int, oh: int
+                     ) -> tuple[int, int, int, int]:
+    """
+    Наибольший осевой прямоугольник внутри (bx,by,bw,bh), не пересекающийся
+    с (ox,oy,ow,oh). Из 4 возможных «разрезов» (лево/право/верх/низ) выбирает
+    тот, что оставляет максимальную площадь.
+
+    Возвращает (x,y,w,h). Если пересечения нет — исходный прямоугольник;
+    если ничего не остаётся — (bx,by,0,0).
+    """
+    ix1 = max(bx, ox); iy1 = max(by, oy)
+    ix2 = min(bx + bw, ox + ow); iy2 = min(by + bh, oy + oh)
+    if ix1 >= ix2 or iy1 >= iy2:
+        return bx, by, bw, bh  # нет пересечения
+
+    options: list[tuple[int, int, int, int]] = []
+    nw = ox - bx
+    if nw > 0: options.append((bx, by, nw, bh))           # обрезать справа
+    nx = ox + ow; nw2 = (bx + bw) - nx
+    if nw2 > 0: options.append((nx, by, nw2, bh))          # обрезать слева
+    nh = oy - by
+    if nh > 0: options.append((bx, by, bw, nh))            # обрезать снизу
+    ny = oy + oh; nh2 = (by + bh) - ny
+    if nh2 > 0: options.append((bx, ny, bw, nh2))          # обрезать сверху
+    if not options:
+        return bx, by, 0, 0
+    return max(options, key=lambda r: r[2] * r[3])
 
 
 def _clip_overlapping_boxes(bubbles: list[dict], min_area: int = 400) -> list[dict]:
@@ -1642,27 +1733,10 @@ def _clip_overlapping_boxes(bubbles: list[dict], min_area: int = 400) -> list[di
         bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
 
         for c in result:
-            cx, cy, cw, ch = c["x"], c["y"], c["width"], c["height"]
-            ix1 = max(bx, cx); iy1 = max(by, cy)
-            ix2 = min(bx + bw, cx + cw); iy2 = min(by + bh, cy + ch)
-            if ix1 >= ix2 or iy1 >= iy2:
-                continue  # нет пересечения
-
-            # 4 варианта обрезки — выбираем с наибольшей оставшейся площадью
-            options: list[tuple[int, int, int, int]] = []
-            nw = cx - bx
-            if nw > 0: options.append((bx, by, nw, bh))
-            nx = cx + cw; nw2 = (bx + bw) - nx
-            if nw2 > 0: options.append((nx, by, nw2, bh))
-            nh = cy - by
-            if nh > 0: options.append((bx, by, bw, nh))
-            ny = cy + ch; nh2 = (by + bh) - ny
-            if nh2 > 0: options.append((bx, ny, bw, nh2))
-
-            if options:
-                bx, by, bw, bh = max(options, key=lambda r: r[2] * r[3])
-            else:
-                bw = bh = 0
+            bx, by, bw, bh = _largest_subrect(
+                bx, by, bw, bh, c["x"], c["y"], c["width"], c["height"]
+            )
+            if bw == 0 or bh == 0:
                 break
 
         if bw * bh >= min_area:
@@ -1785,15 +1859,23 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
     2. Маленький text_free (логотип) → HSV-насыщенность
     3. Fallback: Оцу + sanity-check
     """
-    x, y, w, h = bubble["x"], bubble["y"], bubble["width"], bubble["height"]
-    crop = img_cv[y:y+h, x:x+w]
+    ih, iw = img_cv.shape[:2]
+    # Клампим координаты в границы изображения: отрицательные x/y дали бы
+    # numpy negative-index wrap и молча неверный кроп.
+    x, y = max(0, bubble["x"]), max(0, bubble["y"])
+    x2 = min(iw, bubble["x"] + bubble["width"])
+    y2 = min(ih, bubble["y"] + bubble["height"])
+    w, h = x2 - x, y2 - y
+    if w <= 0 or h <= 0:
+        return default
+    crop = img_cv[y:y2, x:x2]
     if crop.size == 0:
         return default
 
     # 1. CTD-маска — пиксели текстовой области (может включать фон)
     sam2_mask = bubble.get("_sam2_mask")
     if sam2_mask is not None:
-        crop_mask = sam2_mask[y:y+h, x:x+w]
+        crop_mask = sam2_mask[y:y2, x:x2]
         text_pixels = crop[crop_mask > 0]
         if len(text_pixels) >= 10:
             # Полярность по фону: светлый фон → тёмный текст, тёмный → светлый.
@@ -1851,8 +1933,6 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
 
 
 # ─── инпейтинг ────────────────────────────────────────────────────────────────
-
-_LARGE_BUBBLE_PX = 80_000  # порог (px²) — выше него используем глифовую маску
 
 
 def _fill_mask_holes(mask: np.ndarray) -> np.ndarray:
@@ -1992,7 +2072,16 @@ def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
     if not mask_np.any():
         return img_cv.copy()    # инпейтить нечего
 
-    if inpaint_model is None:
+    model = get_inpaint_model()
+    if model is None:
+        return cv2.inpaint(img_cv, mask_np, 3, cv2.INPAINT_TELEA)
+
+    # Кап по разрешению: LaMa прогоняется на полном размере страницы и на
+    # очень больших изображениях даёт CUDA OOM. Выше порога сразу идём в
+    # cv2.inpaint — он работает на CPU и от размера не падает.
+    h_px, w_px = img_cv.shape[:2]
+    if h_px * w_px > _INPAINT_MAX_PIXELS:
+        print(f"  [inpaint] page {w_px}x{h_px} exceeds LaMa pixel cap → cv2.inpaint")
         return cv2.inpaint(img_cv, mask_np, 3, cv2.INPAINT_TELEA)
 
     try:
@@ -2010,7 +2099,7 @@ def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
 
         # 2. Прогон через LaMa
         with torch.no_grad():
-            result_tensor = inpaint_model(img_tensor, mask_tensor)
+            result_tensor = model(img_tensor, mask_tensor)
 
         # 3. Конвертация обратно в numpy
         result_np = result_tensor.squeeze(0).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
@@ -2026,6 +2115,13 @@ def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
         return out.astype(np.uint8)
 
     except Exception as e:
+        # После CUDA OOM контекст остаётся «грязным» и следующие страницы тоже
+        # начинают падать — чистим кэш перед фолбэком.
+        if DEVICE == "cuda":
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
         print(f"  [inpaint ⚠] LaMa failed ({e}), falling back to cv2.inpaint")
         return cv2.inpaint(img_cv, mask_np, 3, cv2.INPAINT_TELEA)
 
@@ -2296,30 +2392,11 @@ def _effective_box(bx: int, by: int, bw: int, bh: int,
     """
     ex, ey, ew, eh = bx, by, bw, bh
     for ob in smaller_bubbles:
-        ox, oy, ow, oh = ob["x"], ob["y"], ob["width"], ob["height"]
-        ix1 = max(ex, ox)
-        iy1 = max(ey, oy)
-        ix2 = min(ex + ew, ox + ow)
-        iy2 = min(ey + eh, oy + oh)
-        if ix1 >= ix2 or iy1 >= iy2:
-            continue  # нет пересечения
-        options: list[tuple[int, int, int, int]] = []
-        nw = ox - ex
-        if nw > 0:
-            options.append((ex, ey, nw, eh))          # обрезать справа
-        nx = ox + ow
-        nw2 = (ex + ew) - nx
-        if nw2 > 0:
-            options.append((nx, ey, nw2, eh))          # обрезать слева
-        nh = oy - ey
-        if nh > 0:
-            options.append((ex, ey, ew, nh))           # обрезать снизу
-        ny = oy + oh
-        nh2 = (ey + eh) - ny
-        if nh2 > 0:
-            options.append((ex, ny, ew, nh2))          # обрезать сверху
-        if options:
-            ex, ey, ew, eh = max(options, key=lambda r: r[2] * r[3])
+        ex, ey, ew, eh = _largest_subrect(
+            ex, ey, ew, eh, ob["x"], ob["y"], ob["width"], ob["height"]
+        )
+        if ew == 0 or eh == 0:
+            break
     return ex, ey, ew, eh
 
 
@@ -2644,9 +2721,15 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
 
 # ─── обработка страницы ───────────────────────────────────────────────────────
 
-def reading_order(bubble: dict) -> tuple:
-    """Сортировка баблов: сверху вниз, справа налево (японский порядок)."""
-    return (bubble["y"] // 150, -bubble["x"])
+def reading_order(bubble: dict, band: int = 150) -> tuple:
+    """
+    Сортировка баблов: сверху вниз, справа налево (японский порядок).
+    band — высота горизонтальной полосы (px), внутри которой баблы считаются
+    «в одном ряду» и сортируются справа налево. Привязывается к высоте
+    страницы вызывающим кодом, иначе на нестандартных разрешениях порядок
+    чтения вырождается.
+    """
+    return (bubble["y"] // max(1, band), -bubble["x"])
 
 
 def process_page(image_path: str, page_idx: int,
@@ -2681,18 +2764,24 @@ def process_page(image_path: str, page_idx: int,
 
     stage("stage_detect")
 
-    # Читаем файл один раз — оба формата получают данные из одного буфера
-    img_cv = cv2.imread(image_path)
-    if img_cv is None:
-        img_cv = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+    # Читаем файл один раз — оба формата получают данные из одного буфера.
+    # read_image бросит ValueError на битом/нечитаемом файле, его поймает
+    # обёртка в process_directory и пометит страницу как failed.
+    img_cv = read_image(image_path)
     image_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
 
-    # 1. Детекция и сортировка баблов (PIL уже в памяти — файл не перечитывается)
-    bubbles = detect_bubbles(image_pil, threshold=DETECT_THRESHOLD)
-    # Второй проход с пониженным порогом — ловим text_free SFX на сложном фоне
-    # (типа "DWEH!" поверх тела персонажа), которые детектор пропускает при основном пороге.
-    for b in detect_bubbles(image_pil, threshold=SFX_THRESHOLD):
-        if b["class"] != "text_free":
+    # 1. Детекция и сортировка баблов (PIL уже в памяти — файл не перечитывается).
+    # Один прогон детектора с минимальным из двух порогов, затем разделяем
+    # результаты в Python — это вдвое дешевле, чем два отдельных инференса.
+    #   • основной набор: все классы с confidence ≥ DETECT_THRESHOLD
+    #   • добор SFX: text_free с DETECT_THRESHOLD > confidence ≥ SFX_THRESHOLD
+    #     (ловим "DWEH!" поверх тела персонажа на сложном фоне)
+    low_threshold = min(DETECT_THRESHOLD, SFX_THRESHOLD)
+    detections = detect_bubbles(image_pil, threshold=low_threshold)
+
+    bubbles = [b for b in detections if b["confidence"] >= DETECT_THRESHOLD]
+    for b in detections:
+        if b["confidence"] >= DETECT_THRESHOLD or b["class"] != "text_free":
             continue
         bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
         # Пропускаем, если уже покрыт существующим баблом на >30 %
@@ -2705,9 +2794,12 @@ def process_page(image_path: str, page_idx: int,
             bubbles.append(b)
             print(f"  [sfx+] text_free @ ({bx},{by}) score={b['confidence']:.2f}")
     bubbles = _clip_overlapping_boxes(bubbles, min_area=MIN_BUBBLE_AREA)
+    # Полоса порядка чтения масштабируется от высоты страницы, иначе на
+    # нестандартных разрешениях сортировка вырождается.
+    band = max(40, img_cv.shape[0] // 25)
     text_bubbles = sorted(
         [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
-        key=reading_order,
+        key=lambda b: reading_order(b, band),
     )
     print(f"Bubbles: {len(text_bubbles)}")
 
