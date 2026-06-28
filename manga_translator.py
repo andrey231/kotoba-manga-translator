@@ -1112,9 +1112,16 @@ For EACH bubble translate the ENTIRE text content:
   (e.g. a lone "·" or "|"). Never discard recognizable words or names.
 
 Return one object per input bubble, in the SAME order, each with "id" (matching the
-input id) and "translation". The "translation" field must contain ONLY the translated
-text — no explanations or commentary. Always produce a translation, even for single
-words or sound effects."""
+input id) and "translation". The "translation" field must contain ONLY the final
+translated text — no explanations, no commentary, no notes, no "//" comments, no
+parentheticals about layout or context. Always produce a translation, even for single
+words or sound effects.
+
+Examples of the "translation" field:
+- Input "WITHOUT" → "БЕЗ"          (RIGHT)
+- Input "WITHOUT" → "// a bit more space for context: БЕЗ"   (WRONG — never add notes/comments)
+- Input "TRUE" → "// usually left in English: ВЕРНО"          (WRONG)
+- Input "TRUE" → "ВЕРНО"           (RIGHT)"""
 
 
 def _build_translation_prompt(entries: list[dict], page_context: str,
@@ -1135,7 +1142,7 @@ def _call_translation_llm(prompt: str, system: str, n: int,
     for attempt in range(retries):
         try:
             return ollama(LLM_MODEL, prompt, timeout=600, num_predict=6000,
-                          system=system, fmt=_translation_schema(n),
+                          temperature=0.0, system=system, fmt=_translation_schema(n),
                           num_ctx=TRANSLATE_NUM_CTX)
         except requests.exceptions.ReadTimeout:
             print(f"     [timeout] chunk {chunk_idx+1}, retry {attempt+1}/{retries}...")
@@ -1143,7 +1150,8 @@ def _call_translation_llm(prompt: str, system: str, n: int,
 
 
 def _looks_like_commentary(t: str, src: str) -> bool:
-    if any(t.lower().startswith(m) for m in _META_MARKERS):
+    low = t.lower()
+    if low.startswith("//") or any(low.startswith(m) for m in _META_MARKERS):
         return True
     return len(src) <= 15 and len(t) > max(40, len(src) * 6)
 
