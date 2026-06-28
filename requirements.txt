@@ -1,14 +1,13 @@
-# PyTorch CUDA wheels (RTX cards, 8x faster than CPU)
-# Если CUDA не нужна, удалите следующую строку — поставится CPU-сборка
---extra-index-url https://download.pytorch.org/whl/cu124
+# PyTorch ставится ОТДЕЛЬНО в run.bat командой с --index-url cu128 (поддержка
+# RTX 50xx / Blackwell, sm_120). cu124 НЕ поддерживает эти карты и тянет CPU-сборку.
+# Вручную (GPU): pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# CPU-only:      pip install torch torchvision
 
 # Компьютерное зрение
 opencv-python>=4.10
 numpy>=1.26
 
 # Глубокое обучение
-torch>=2.3                  # включая поддержку TorchScript для LaMa
-torchvision>=0.18           # требуется transformers для AutoImageProcessor
 transformers>=5.0           # RT-DETRv2 (детекция баблов) + GLM-OCR (glm_ocr, OCR)
 huggingface_hub>=0.24       # скачивание anime-big-lama
 # Сегментация текста — Comic Text Detector (ONNX, специализирован для манги)

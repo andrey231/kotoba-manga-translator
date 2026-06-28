@@ -70,6 +70,9 @@ echo.
 "%PY_EXE%" -m pip install --upgrade pip
 if errorlevel 1 goto pip_deps_failed
 
+"%PY_EXE%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 goto pip_deps_failed
+
 "%PY_EXE%" -m pip install --upgrade -r requirements.txt
 if errorlevel 1 goto pip_deps_failed
 
