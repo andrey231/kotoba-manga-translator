@@ -1,14 +1,14 @@
 """
-setup.py — launcher запускаемый из run.bat / run.sh.
+setup.py — launcher invoked from run.bat / run.sh.
 
-Зависимости УЖЕ установлены в venv через run.bat (там портативная установка
-по принципу ComfyUI: всё в подпапке venv/, изолированно от системы).
-Этот скрипт только:
-  1. Проверяет что Ollama запущена и есть подходящие модели (warning, не fatal)
-  2. Запускает uvicorn web:app
+Dependencies are ALREADY installed into the venv by run.bat (a portable,
+ComfyUI-style install: everything lives under venv/, isolated from the system).
+This script only:
+  1. Checks that Ollama is running and suitable models exist (warning, not fatal)
+  2. Launches uvicorn web:app
 
-Если вы запускаете этот файл вручную (минуя run.bat), убедитесь что находитесь
-в venv с уже установленными зависимостями.
+If you run this file manually (bypassing run.bat), make sure you are inside a
+venv with the dependencies already installed.
 """
 
 import sys
@@ -37,7 +37,6 @@ def check_python():
 
 
 def check_ollama():
-    """Проверяет что Ollama запущена и есть хотя бы одна мультимодальная модель."""
     info("Checking Ollama...")
     try:
         import requests
@@ -60,7 +59,6 @@ def check_ollama():
         print(f"   {DIM}ollama pull glm-ocr{RESET}")
         return
 
-    # Простая эвристика: имена с известными vision-маркерами
     hints = ("vl", "vision", "llava", "gemma", "qwen", "minicpm",
              "llama4", "pixtral", "molmo", "phi")
     multimodal = [m["name"] for m in models
@@ -75,7 +73,6 @@ def check_ollama():
         warn("Translation needs a vision-capable model. Try:")
         print(f"   {DIM}ollama pull gemma4:26b{RESET}")
 
-    # OCR-модель
     has_ocr = any("ocr" in m["name"].lower() for m in models)
     if not has_ocr:
         warn("No OCR model detected (glm-ocr recommended). Pull with:")
@@ -96,25 +93,16 @@ def launch_server():
         err("Run via run.bat (Windows) or run.sh (Linux/Mac) to set up venv automatically.")
         sys.exit(1)
 
-    # КРИТИЧНО: embeddable Python не добавляет cwd в sys.path автоматически,
-    # как делает обычный python. Без этого uvicorn.run("web:app", ...) падает
-    # с "Could not import module 'web'". Добавляем директорию этого скрипта
-    # в sys.path и меняем рабочую директорию на неё.
     import os
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
     os.chdir(script_dir)
 
-    # Открываем браузер из отдельного потока: дожидаемся пока порт начнёт
-    # принимать соединения, потом запускаем системный браузер.
-    # Если сделать это до uvicorn.run, страница покажет "сервер недоступен";
-    # если использовать фиксированный sleep — на медленных машинах не хватит.
     import threading, socket, time, webbrowser
 
     def open_browser():
         url = "http://localhost:8000"
-        # Ждём пока порт начнёт отвечать (макс. 30 секунд)
         for _ in range(60):
             try:
                 with socket.create_connection(("127.0.0.1", 8000), timeout=0.5):
@@ -131,8 +119,6 @@ def launch_server():
 
     threading.Thread(target=open_browser, daemon=True).start()
 
-    # Слушаем только localhost по умолчанию (нет аутентификации). Открыть в
-    # локальную сеть осознанно: KOTOBA_HOST=0.0.0.0 перед запуском.
     host = os.environ.get("KOTOBA_HOST", "127.0.0.1")
     try:
         uvicorn.run("web:app", host=host, port=8000, log_level="info")

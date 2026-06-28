@@ -1,11 +1,11 @@
 """
 web.py
-Веб-интерфейс для manga_translator.py
+Web interface for manga_translator.py
 
-Запуск:
-    uvicorn web:app --host 0.0.0.0 --port 8000
+Run:
+    uvicorn web:app --host 127.0.0.1 --port 8000
 
-Откройте http://localhost:8000 в браузере.
+Open http://localhost:8000 in your browser.
 """
 
 import io
@@ -27,38 +27,28 @@ from fastapi.staticfiles import StaticFiles
 import manga_translator as mt
 
 
-# ─── состояние и пути ─────────────────────────────────────────────────────────
-
 BASE_DIR = Path("web_data")
 UPLOADS_DIR = BASE_DIR / "uploads"
 RESULTS_DIR = BASE_DIR / "results"
-JOBS_DIR = BASE_DIR / "jobs"          # bubbles.json по каждому job_id
+JOBS_DIR = BASE_DIR / "jobs"
 GLOSSARY_FILE = BASE_DIR / "glossary.json"
 
 for d in (UPLOADS_DIR, RESULTS_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 
-# Потолок суммарного размера распакованного архива — защита от zip-бомбы.
-_MAX_EXTRACT_BYTES = 4 * 1024 ** 3   # 4 GB
+_MAX_EXTRACT_BYTES = 4 * 1024 ** 3
 
 _JOB_ID_RE = re.compile(r"[0-9a-f]{6,32}")
 
 
 def _safe_id(job_id: str) -> str:
-    """
-    Валидирует job_id перед использованием в путях. job_id генерируется как
-    uuid4().hex[:12] (только hex), поэтому всё, что не совпадает с этим
-    шаблоном, отвергаем — иначе значения вроде '..' или 'a/../b' могли бы
-    увести чтение/запись за пределы web_data (path traversal).
-    """
     if not _JOB_ID_RE.fullmatch(job_id):
         raise HTTPException(400, "Invalid job_id")
     return job_id
 
 
 def _hex_to_rgb(value: str | None) -> list[int] | None:
-    """'#rrggbb' → [r,g,b]; None/некорректный hex → None."""
     h = (value or "").lstrip("#")
     if len(h) != 6:
         return None
@@ -82,42 +72,27 @@ def _save_glossary(entries: list) -> None:
     mt.GLOSSARY = entries
 
 
-# Загружаем глоссарий в память translator'а при старте
 mt.GLOSSARY = _load_glossary()
 
-# Активные джобы: job_id → {"status", "pages", "stats", "ws_queue"}
 JOBS: dict = {}
 
 
-# ─── FastAPI app ──────────────────────────────────────────────────────────────
-
 app = FastAPI(title="Kotoba — Manga Translator")
 
-# Раздаём результаты статикой — браузер сможет тянуть картинки напрямую
 app.mount("/files", StaticFiles(directory=BASE_DIR), name="files")
 
-
-# ─── главная страница ─────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse((Path(__file__).parent / "web_ui.html").read_text(encoding="utf-8"))
 
 
-# ─── список доступных LLM-моделей из Ollama ──────────────────────────────────
-
-# URL Ollama можно переопределить переменной окружения OLLAMA_HOST
-# (Ollama использует ту же переменную). По умолчанию — localhost:11434.
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 if not OLLAMA_HOST.startswith(("http://", "https://")):
     OLLAMA_HOST = f"http://{OLLAMA_HOST}"
 
 
 def _fetch_ollama_models() -> tuple[list, str | None]:
-    """
-    Запрашивает /api/tags у Ollama и возвращает (список_моделей, ошибка_или_None).
-    Если что-то пошло не так — пишет в консоль развёрнутую диагностику.
-    """
     import requests as _req
     url = f"{OLLAMA_HOST}/api/tags"
     try:
@@ -150,27 +125,22 @@ def _fetch_ollama_models() -> tuple[list, str | None]:
     return models, None
 
 
-# Имена которые ТОЧНО мультимодальные — фильтр должен пропускать их без вопросов
 KNOWN_MULTIMODAL = (
     "llava", "bakllava", "moondream", "minicpm-v", "minicpm",
     "qwen2-vl", "qwen2.5-vl", "qwen-vl",
     "llama3.2-vision", "llama4",
     "pixtral", "molmo",
-    "gemma3", "gemma4",  # обе поддерживают vision
+    "gemma3", "gemma4",
     "phi3.5-vision", "phi-3-vision", "phi3-vision", "phi4-vision",
     "internvl", "cogvlm", "yi-vl",
 )
-# Семейства из ollama show — означают что у модели есть vision-проектор
 MULTIMODAL_FAMILIES = {"clip", "mllama", "llava", "gemma3", "gemma4"}
-# OCR-модели не подходят для перевода/анализа сцены, прячем их
 OCR_FAMILIES = {"glmocr"}
 OCR_NAME_HINTS = ("glm-ocr", "tesseract", "paddleocr", "easyocr")
-# Не-мультимодальные модели которые могут случайно матчиться по подстроке "gemma" или "phi"
 NEVER_MULTIMODAL = ("gemma:", "gemma2:", "gemma2-", "phi3:", "phi3-mini", "phi:")
 
 
 def _is_ocr(name: str, family: str, families: set) -> bool:
-    """OCR-модели исключаем из списка LLM."""
     name_lower = name.lower()
     if any(hint in name_lower for hint in OCR_NAME_HINTS):
         return True
@@ -182,19 +152,13 @@ def _is_ocr(name: str, family: str, families: set) -> bool:
 
 
 def _is_multimodal(name: str, family: str, families: set) -> bool:
-    """Решает мультимодальная модель или нет, на основе имени + метаданных Ollama."""
     name_lower = name.lower()
-    # Жёсткое исключение
     if any(name_lower.startswith(p) for p in NEVER_MULTIMODAL):
         return False
-    # Жёсткое включение по имени (subscring match, чтобы ловить
-    # huihui_ai/gemma-4-abliterated:26b, ollama пользовательских сборок и т.п.)
     if any(known in name_lower for known in KNOWN_MULTIMODAL):
         return True
-    # gemma-4 как имя файла без 'gemma4' — например 'gemma-4-abliterated'
     if "gemma-4" in name_lower or "gemma-3" in name_lower:
         return True
-    # Метаданные Ollama: family/families указывают на vision
     if family.lower() in MULTIMODAL_FAMILIES:
         return True
     if families & MULTIMODAL_FAMILIES:
@@ -204,7 +168,6 @@ def _is_multimodal(name: str, family: str, families: set) -> bool:
 
 @app.get("/api/models")
 async def list_models():
-    """Список Ollama-моделей с пометкой какие мультимодальные / OCR."""
     models_raw, error = _fetch_ollama_models()
     out = []
     for m in models_raw:
@@ -225,7 +188,6 @@ async def list_models():
             "multimodal": is_multi,
             "ocr": ocr,
         })
-    # Multimodal first, then "other" LLMs, OCR last
     out.sort(key=lambda m: (m["ocr"], not m["multimodal"], m["name"]))
     return {
         "models": out,
@@ -236,42 +198,35 @@ async def list_models():
 
 
 def _system_font_dirs() -> list[str]:
-    """Возвращает список папок с шрифтами для текущей ОС."""
     dirs: list[str] = []
-    if os.name == "nt":  # Windows
+    if os.name == "nt":
         dirs.append("C:/Windows/Fonts")
         local = os.environ.get("LOCALAPPDATA", "")
         if local:
             dirs.append(os.path.join(local, "Microsoft", "Windows", "Fonts"))
     else:
-        # Linux
         dirs += [
             "/usr/share/fonts",
             "/usr/local/share/fonts",
             os.path.expanduser("~/.fonts"),
             os.path.expanduser("~/.local/share/fonts"),
         ]
-        # macOS
         dirs += [
             "/Library/Fonts",
             "/System/Library/Fonts",
             os.path.expanduser("~/Library/Fonts"),
         ]
-    # Своя папка проекта — для кастомных шрифтов рядом с проектом
     dirs.append(str(Path.cwd()))
     return [d for d in dirs if os.path.isdir(d)]
 
 
 @app.get("/api/fonts")
 async def list_fonts():
-    """Сканирует системные папки шрифтов и возвращает список {file, path, family, style, display}."""
     from PIL import ImageFont
 
     fonts: list[dict] = []
     seen: set[str] = set()
     for root_dir in _system_font_dirs():
-        # os.walk — рекурсивно, нужно для Linux где шрифты в подпапках
-        # (/usr/share/fonts/truetype/dejavu/, /usr/share/fonts/opentype/... и т.д.)
         for dirpath, _, filenames in os.walk(root_dir):
             for fname in filenames:
                 if not fname.lower().endswith((".ttf", ".otf")):
@@ -295,10 +250,6 @@ async def list_fonts():
 
 @app.get("/api/models/debug")
 async def debug_models():
-    """
-    Возвращает СЫРОЙ ответ Ollama для диагностики.
-    Открой http://localhost:8000/api/models/debug в браузере чтобы посмотреть.
-    """
     import requests as _req
     url = f"{OLLAMA_HOST}/api/tags"
     try:
@@ -316,8 +267,6 @@ async def debug_models():
             "error": f"{type(e).__name__}: {e}",
         }
 
-
-# ─── загрузка главы ──────────────────────────────────────────────────────────
 
 @app.post("/api/upload")
 async def upload_chapter(
@@ -338,17 +287,13 @@ async def upload_chapter(
     chunk_size: int = Form(5),
     translate_retries: int = Form(3),
 ):
-    """
-    Создаёт job, сохраняет файлы, возвращает job_id.
-    Сам процесс перевода запустится отдельно через POST /api/start/{job_id}.
-    """
     job_id = uuid.uuid4().hex[:12]
     upload_dir = UPLOADS_DIR / job_id
     result_dir = RESULTS_DIR / job_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     result_dir.mkdir(parents=True, exist_ok=True)
 
-    extracted_total = 0   # суммарный объём распакованного — защита от zip-бомбы
+    extracted_total = 0
     for f in files:
         ext = Path(f.filename).suffix.lower()
         if ext in {'.zip', '.cbz'}:
@@ -367,7 +312,6 @@ async def upload_chapter(
                         raise HTTPException(
                             413, "Archive too large when decompressed "
                                  f"(> {_MAX_EXTRACT_BYTES // (1024**3)} GB)")
-                    # name — только basename, поэтому zip-slip исключён
                     (upload_dir / name).write_bytes(zf.read(entry))
         elif ext in mt.SUPPORTED_EXTENSIONS:
             target = upload_dir / f.filename
@@ -407,15 +351,8 @@ async def upload_chapter(
     return {"job_id": job_id, "total_pages": len(saved), "filenames": [p.name for p in saved]}
 
 
-# ─── запуск перевода и WebSocket прогресс ────────────────────────────────────
-
 @app.websocket("/ws/{job_id}")
 async def ws_progress(websocket: WebSocket, job_id: str):
-    """
-    Открывается клиентом сразу после upload.
-    Клиент шлёт {"action": "start"} — запускаем перевод.
-    Сервер шлёт события {type: "start"|"page_done"|"finish"|"error"|"log"}.
-    """
     await websocket.accept()
     if job_id not in JOBS:
         await websocket.send_json({"type": "error", "message": "Unknown job_id"})
@@ -425,8 +362,6 @@ async def ws_progress(websocket: WebSocket, job_id: str):
     job = JOBS[job_id]
     loop = asyncio.get_running_loop()
 
-    # Коллбэки бегают в синхронном потоке (process_directory блокирующий) —
-    # нужно перебрасывать события в asyncio через call_soon_threadsafe
     def emit(payload: dict):
         loop.call_soon_threadsafe(job["queue"].put_nowait, payload)
 
@@ -436,13 +371,11 @@ async def ws_progress(websocket: WebSocket, job_id: str):
 
     def on_page_done(page_idx, total, filename, output_path, bubbles, elapsed):
         job["completed"] = page_idx
-        # Превращаем абсолютный путь в URL для браузера
         try:
             rel = Path(output_path).resolve().relative_to(BASE_DIR.resolve())
             url = f"/files/{rel.as_posix()}"
         except Exception:
             url = None
-        # Минимальное представление баблов для редактора
         page_data = {
             "page": page_idx,
             "filename": filename,
@@ -458,8 +391,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     "translation": b.get("translation", ""),
                     "speaker": b.get("speaker", "unknown"),
                     "gender": b.get("gender", "unknown"),
-                    "font_path": b.get("font_path"),    # per-bubble override (None = use default)
-                    "font_size": b.get("font_size"),    # per-bubble override (None = auto-fit)
+                    "font_path": b.get("font_path"),
+                    "font_size": b.get("font_size"),
                     "text_color": list(b["_text_color"]) if b.get("_text_color") else None,
                     "class": b.get("class", "text_bubble"),
                     "_text_angle": b.get("_text_angle", 0.0),
@@ -468,7 +401,6 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             ],
         }
         job["pages"].append(page_data)
-        # Сохраняем по job_id, чтобы редактор мог потом править
         (JOBS_DIR / f"{job_id}.json").write_text(
             json.dumps(job["pages"], ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -484,22 +416,18 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         emit({"type": "stage", "page": page_idx, "stage_key": stage_key})
 
     async def run_job():
-        """Запускает синхронный перевод в отдельном потоке."""
         cfg = job["config"]
         upload_dir = UPLOADS_DIR / job_id
         result_dir = RESULTS_DIR / job_id
 
-        # Включаем подробный лог LLM для этого джоба если запросили
         mt.DEBUG_LLM = bool(cfg.get("llm_debug"))
         if mt.DEBUG_LLM:
             print("\n*** VERBOSE LLM LOGGING ENABLED — every prompt/response will be printed ***\n")
 
-        # Кропы OCR — изолируем по job_id
         crops_dir = result_dir / "crops"
         crops_dir.mkdir(exist_ok=True)
         mt.CROPS_DIR = str(crops_dir)
 
-        # Mask debug — сохраняем в папку результатов этого джоба
         if cfg.get("mask_debug"):
             mask_dbg_dir = result_dir / "mask_debug"
             mask_dbg_dir.mkdir(exist_ok=True)
@@ -536,7 +464,6 @@ async def ws_progress(websocket: WebSocket, job_id: str):
     runner_task: Optional[asyncio.Task] = None
     try:
         while True:
-            # Ждём либо команды от клиента, либо событий из очереди
             recv_task = asyncio.create_task(websocket.receive_json())
             queue_task = asyncio.create_task(job["queue"].get())
             done, pending = await asyncio.wait(
@@ -563,16 +490,11 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 if event.get("type") == "finish":
                     break
     except WebSocketDisconnect:
-        # Клиент отключился (закрыл вкладку или нажал Abort) — останавливаем перевод.
-        # Текущая страница дообработается, cancel_event остановит следующую.
         job["cancel_event"].set()
 
 
-# ─── отмена джоба ────────────────────────────────────────────────────────────
-
 @app.post("/api/job/{job_id}/abort")
 async def abort_job(job_id: str):
-    """Устанавливает cancel_event — перевод остановится после текущей страницы."""
     _safe_id(job_id)
     if job_id not in JOBS:
         raise HTTPException(404, "Job not found")
@@ -581,11 +503,8 @@ async def abort_job(job_id: str):
     return {"ok": True}
 
 
-# ─── редактор: правка переводов ──────────────────────────────────────────────
-
 @app.get("/api/job/{job_id}")
 async def get_job(job_id: str):
-    """Возвращает все страницы джоба с баблами для редактора."""
     _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
@@ -595,10 +514,6 @@ async def get_job(job_id: str):
 
 @app.post("/api/job/{job_id}/page/{page_idx}/render")
 async def re_render_page(job_id: str, page_idx: int, payload: dict):
-    """
-    Перерисовывает страницу с обновлёнными переводами.
-    payload: {"bubbles": [{"idx": 1, "translation": "новый перевод"}, ...]}
-    """
     _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
@@ -609,8 +524,6 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     if not page:
         raise HTTPException(404, "Page not found")
 
-    # Применяем обновления баблов (translation, font_path, font_size и стили).
-    # Только указанные в payload поля затрагиваются — остальные сохраняются.
     updates = {b["idx"]: b for b in payload.get("bubbles", []) if "idx" in b}
     for b in page["bubbles"]:
         if b["idx"] in updates:
@@ -650,7 +563,6 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
                 b["w"] = nw
                 b["h"] = nh
 
-    # Перерисовываем страницу
     upload_dir = UPLOADS_DIR / job_id
     result_dir = RESULTS_DIR / job_id
     src_path = upload_dir / page["filename"]
@@ -661,7 +573,6 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    # Восстанавливаем структуру bubbles в формате draw_results
     bubbles_for_draw = [
         {
             "x": b["x"], "y": b["y"],
@@ -689,23 +600,14 @@ async def re_render_page(job_id: str, page_idx: int, payload: dict):
     out_path = result_dir / f"{Path(page['filename']).stem}_translated.png"
     cv2.imwrite(str(out_path), annotated)
 
-    # Сохраняем обновлённые баблы обратно
     job_file.write_text(json.dumps(pages, ensure_ascii=False, indent=2),
                          encoding="utf-8")
 
     return {"ok": True, "url": f"/files/results/{job_id}/{out_path.name}"}
 
 
-# ─── детекция в выделенной области ──────────────────────────────────────────
-
 @app.post("/api/job/{job_id}/page/{page_idx}/detect-region")
 async def detect_region(job_id: str, page_idx: int, payload: dict):
-    """
-    Детектирует баблы в выделенной пользователем области, запускает полный
-    пайплайн (OCR → маски → перевод → инпейтинг → отрисовка) и возвращает
-    новые баблы + обновлённый URL результата.
-    payload: {"x": int, "y": int, "w": int, "h": int}
-    """
     _safe_id(job_id)
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
@@ -741,14 +643,12 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
         img_cv = mt.read_image(str(src_path))
 
         ih, iw = img_cv.shape[:2]
-        # Зажимаем регион в границах изображения
         x0 = max(0, min(rx, iw - 1))
         y0 = max(0, min(ry, ih - 1))
         x1 = min(iw, x0 + rw)
         y1 = min(ih, y0 + rh)
         cw, ch = x1 - x0, y1 - y0
 
-        # ── 1. Детекция на ресайзнутом кропе (640×640) ───────────────────────
         DET = 640
         crop_cv = img_cv[y0:y1, x0:x1]
         resized = cv2.resize(crop_cv, (DET, DET), interpolation=cv2.INTER_LINEAR)
@@ -758,7 +658,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
         if not raw:
             return {"ok": True, "new_bubbles": [], "url": None}
 
-        # Масштабируем координаты 640×640 → исходное изображение
         sx, sy = cw / DET, ch / DET
         for b in raw:
             b["x"]      = max(0, min(round(b["x"]      * sx) + x0, iw - 1))
@@ -770,7 +669,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
         if not raw:
             return {"ok": True, "new_bubbles": [], "url": None}
 
-        # Уникальные idx (продолжаем нумерацию существующих баблов)
         max_idx = max((b["idx"] for b in page["bubbles"]), default=0)
         for i, b in enumerate(raw):
             b.update(idx=max_idx + i + 1, text="", translation="",
@@ -778,7 +676,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
                      font_path=font_path, font_size=None,
                      _text_color=None, _sam2_mask=None, _text_angle=0.0)
 
-        # ── 2. OCR ───────────────────────────────────────────────────────────
         crops_dir = result_dir / "crops"
         crops_dir.mkdir(exist_ok=True)
         mt.CROPS_DIR = str(crops_dir)
@@ -792,9 +689,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
 
         text_bubbles = [b for b in raw if b.get("text", "").strip()]
 
-        # ── 3. Маски + цвет — вычисляем из источника ─────────────────────────
-        # _compute_text_masks пропускает баблы с пустым translation,
-        # поэтому временно ставим placeholder перед переводом.
         for b in text_bubbles:
             b["translation"] = b["text"]
         mt._compute_text_masks(img_cv, text_bubbles)
@@ -803,7 +697,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
             if b.get("_text_color") is None:
                 b["_text_color"] = mt.detect_text_color(img_cv, b)
 
-        # ── 4. Перевод ───────────────────────────────────────────────────────
         dummy_ctx = mt.MangaContext()
         if text_bubbles:
             mt.translate_batch(
@@ -811,7 +704,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
                 retries=translate_retries,
             )
 
-        # ── 5. Отрисовка поверх текущего результата ───────────────────────────
         out_path = result_dir / f"{Path(page['filename']).stem}_translated.png"
         if out_path.exists():
             base_cv = cv2.imread(str(out_path))
@@ -845,7 +737,6 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
             annotated = mt.draw_results(base_cv, bubbles_for_draw, debug=False)
             cv2.imwrite(str(out_path), annotated)
 
-        # ── 6. Сохраняем в JSON джоба ─────────────────────────────────────────
         def _color(c):
             return list(c) if c else None
 
@@ -887,15 +778,8 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
         raise HTTPException(500, str(e))
 
 
-# ─── архив персонажей ─────────────────────────────────────────────────────────
-
 @app.get("/api/job/{job_id}/export")
 async def export_job(job_id: str, fmt: str = "zip"):
-    """
-    Собирает все переведённые страницы джоба в архив (zip или cbz).
-    fmt: 'zip' (по умолчанию) или 'cbz' (тот же zip с расширением .cbz —
-    стандарт для манги/комиксов, открывается ридерами вроде CDisplayEx).
-    """
     if fmt not in ("zip", "cbz"):
         raise HTTPException(400, "fmt must be 'zip' or 'cbz'")
 
@@ -911,16 +795,13 @@ async def export_job(job_id: str, fmt: str = "zip"):
     if not result_dir.exists() or not any(result_dir.iterdir()):
         raise HTTPException(404, "No rendered pages found")
 
-    # Используем in-memory буфер; для главы из 50-100 страниц это ~20-50MB
     import io
     import zipfile
 
     buf = io.BytesIO()
-    pad = len(str(len(pages_sorted)))   # для 100 страниц → 3-значное паддинг
+    pad = len(str(len(pages_sorted)))
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for p in pages_sorted:
-            # Имя файла в архиве: 001_page.png, 002_page.png, ...
-            # Ридеры манги сортируют именно так
             src_name = Path(p["filename"]).stem
             src_path = result_dir / f"{src_name}_translated.png"
             if not src_path.exists():
@@ -933,7 +814,6 @@ async def export_job(job_id: str, fmt: str = "zip"):
     if not content:
         raise HTTPException(404, "No translated pages in this job")
 
-    # Имя файла для скачивания
     filename = f"translation_{job_id[:8]}.{fmt}"
     media_type = "application/zip" if fmt == "zip" else "application/vnd.comicbook+zip"
 
@@ -950,7 +830,6 @@ async def export_job(job_id: str, fmt: str = "zip"):
 
 @app.get("/api/characters")
 async def get_characters():
-    """Возвращает содержимое characters.json."""
     path = Path("characters.json")
     if not path.exists():
         return {}
@@ -959,7 +838,6 @@ async def get_characters():
 
 @app.put("/api/characters")
 async def save_characters(data: dict):
-    """Сохраняет characters.json после редактирования."""
     Path("characters.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -969,7 +847,6 @@ async def save_characters(data: dict):
 
 @app.delete("/api/characters")
 async def clear_characters():
-    """Очищает весь архив персонажей."""
     path = Path("characters.json")
     if path.exists():
         path.write_text("{}", encoding="utf-8")
@@ -978,7 +855,6 @@ async def clear_characters():
 
 @app.delete("/api/characters/{char_id}")
 async def delete_character(char_id: str):
-    """Удаляет одного персонажа из архива."""
     path = Path("characters.json")
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     if char_id not in data:
@@ -988,8 +864,6 @@ async def delete_character(char_id: str):
                      encoding="utf-8")
     return {"ok": True}
 
-
-# ─── глоссарий ───────────────────────────────────────────────────────────────
 
 @app.get("/api/glossary")
 async def get_glossary():
@@ -1034,10 +908,6 @@ async def delete_glossary_entry(idx: int):
 
 if __name__ == "__main__":
     import uvicorn
-    # По умолчанию слушаем только localhost — у приложения нет аутентификации,
-    # и на 0.0.0.0 любой в локальной сети получил бы доступ к чужим сканам,
-    # персонажам и файлам web_data. Чтобы открыть наружу осознанно:
-    #   KOTOBA_HOST=0.0.0.0 python web.py
     host = os.environ.get("KOTOBA_HOST", "127.0.0.1")
     port = int(os.environ.get("KOTOBA_PORT", "8000"))
     uvicorn.run(app, host=host, port=port)
