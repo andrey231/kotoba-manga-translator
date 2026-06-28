@@ -23,6 +23,7 @@ import os
 os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(2 ** 40))
 
 import re
+import io
 import json
 import time
 import base64
@@ -413,6 +414,18 @@ def image_to_base64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+OLLAMA_IMAGE_MAX = 1024
+
+
+def _prep_ollama_image(path: str) -> str:
+    img = Image.open(path).convert("RGB")
+    if max(img.size) > OLLAMA_IMAGE_MAX:
+        img.thumbnail((OLLAMA_IMAGE_MAX, OLLAMA_IMAGE_MAX))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
 def read_image(path: str) -> np.ndarray:
     img = cv2.imread(path)
     if img is None:
@@ -558,7 +571,7 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
         if opts:
             payload["options"] = opts
         if image_path:
-            payload["images"] = [image_to_base64(image_path)]
+            payload["images"] = [_prep_ollama_image(image_path)]
         r = requests.post(OLLAMA_URL, json=payload, timeout=timeout)
         response = r.json().get("response", "").strip()
         if DEBUG_LLM:
