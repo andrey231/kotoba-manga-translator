@@ -69,6 +69,7 @@ test_output/
 .env.local
 *.key
 huggingface_token.txt
+CLAUDE.md
 
 # ── OS / build ───────────────────────────────────────────────────────────
 *.log
