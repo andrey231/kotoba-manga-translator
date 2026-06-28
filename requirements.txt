@@ -12,7 +12,10 @@ transformers>=5.0           # RT-DETRv2 (детекция баблов) + GLM-OC
 huggingface_hub>=0.24       # скачивание anime-big-lama
 # Сегментация текста — Comic Text Detector (ONNX, специализирован для манги)
 # Веса (~30 MB) скачиваются с HuggingFace при первом запуске автоматически.
-onnxruntime-gpu>=1.18      # GPU-инференс; замените на onnxruntime если нет CUDA
+# CUDA-сборка onnxruntime ДОЛЖНА совпадать с CUDA-мажором torch (cu128 = CUDA 12).
+# 1.20.1 — последняя ветка под CUDA 12 + cuDNN 9 (их даёт torch/lib). Новее (1.27+)
+# требует CUDA 13 и падает в CPU. Без GPU: pip install onnxruntime
+onnxruntime-gpu==1.20.1
 
 # Изображения и шрифты
 Pillow>=10.4

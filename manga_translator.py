@@ -182,11 +182,23 @@ _ctd_session = None
 _CTD_MODEL_ID   = "mayocream/comic-text-detector-onnx"
 _CTD_MODEL_FILE = "comic-text-detector.onnx"
 _CTD_INPUT_SIZE = 1024
+def _add_torch_cuda_dll_dir():
+    if DEVICE != "cuda" or os.name != "nt":
+        return
+    try:
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if os.path.isdir(torch_lib):
+            os.add_dll_directory(torch_lib)
+    except Exception:
+        pass
+
+
 def _get_ctd_session():
     global _ctd_session
     if _ctd_session is not None:
         return _ctd_session if _ctd_session is not False else None
 
+    _add_torch_cuda_dll_dir()
     try:
         import onnxruntime as ort
     except ImportError:
