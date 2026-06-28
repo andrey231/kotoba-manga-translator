@@ -60,6 +60,9 @@ CTD_MIN_COVERAGE = 0.05
 INK_DARK_PERCENTILE = 25
 INK_LIGHT_PERCENTILE = 75
 BALANCED_LINE_TOLERANCE = 1.3
+MIN_EFFECTIVE_BOX = 20
+VERTICAL_TEXT_ANGLE = 45
+ROTATE_SUPERSAMPLE = 2
 
 GLOSSARY: list[dict] = []
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
@@ -67,7 +70,7 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 BUBBLE_MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
 BUBBLE_CLASSES = {0: "bubble", 1: "text_bubble", 2: "text_free"}
 
-LLM_MODEL = "gemma4:26b"
+LLM_MODEL = ""
 
 LAMA_REPOS = [
     ("deckyfx/anime-big-lama", "anime-manga-big-lama.pt"),
@@ -995,34 +998,8 @@ def translate_batch(bubbles: list[dict], page_context: str,
                                speaker=b.get("speaker", "?"))
 
 
-def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
-                     missing_indices: list, page_context: str,
-                     manga_ctx: MangaContext, target_lang: str,
-                     gender_hints: dict, errors, page_idx: int,
-                     retries: int) -> None:
-    chunk_offset = chunk_idx * TRANSLATE_CHUNK_SIZE
-    local_to_global = {i + 1: chunk_offset + i for i in range(len(chunk))}
-
-    padding_entries = []
-    if len(chunk) < 3:
-        padding_samples = [
-            ("Narrator", "neutral", "The story continues."),
-            ("Narrator", "neutral", "A new scene begins."),
-            ("Narrator", "neutral", "The page turns."),
-        ]
-        need = 3 - len(chunk)
-        for i in range(need):
-            spk, gen, txt = padding_samples[i]
-            padding_entries.append({
-                "id": len(chunk) + i + 1,
-                "speaker": spk,
-                "gender": gen,
-                "text": txt,
-                "emotion": "neutral",
-                "_padding": True,
-            })
-
-    all_entries = [
+def _build_chunk_entries(chunk: list, gender_hints: dict) -> list[dict]:
+    entries = [
         {
             "id": i + 1,
             "speaker": b["speaker"],
@@ -1031,27 +1008,31 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
             "emotion": b.get("emotion_hint", "neutral"),
         }
         for i, (_, b) in enumerate(chunk)
-    ] + [{k: v for k, v in e.items() if k != "_padding"} for e in padding_entries]
+    ]
+    padding_samples = [
+        ("Narrator", "neutral", "The story continues."),
+        ("Narrator", "neutral", "A new scene begins."),
+        ("Narrator", "neutral", "The page turns."),
+    ]
+    for i in range(max(0, 3 - len(chunk))):
+        spk, gen, txt = padding_samples[i]
+        entries.append({"id": len(chunk) + i + 1, "speaker": spk,
+                        "gender": gen, "text": txt, "emotion": "neutral"})
+    return entries
 
-    inputs_json = json.dumps(all_entries, ensure_ascii=False, indent=2)
 
-    is_cjk_or_cyrillic = target_lang.lower() in (
-        "russian", "japanese", "chinese", "korean",
-        "ukrainian", "bulgarian", "serbian"
-    )
-    per_bubble = 500 if is_cjk_or_cyrillic else 250
-    total = len(all_entries)
-    dyn_predict = 6000
-
-    n = total
-    _glossary_section = _build_glossary_prompt()
-    prompt = f"""You are translating manga content to {target_lang}.
+def _build_translation_prompt(entries: list[dict], page_context: str,
+                              manga_ctx: MangaContext, target_lang: str) -> str:
+    n = len(entries)
+    inputs_json = json.dumps(entries, ensure_ascii=False, indent=2)
+    glossary_section = _build_glossary_prompt()
+    return f"""You are translating manga content to {target_lang}.
 
 {manga_ctx.to_prompt()}
 
 PAGE CONTEXT:
 {page_context}
-{(chr(10) + _glossary_section + chr(10)) if _glossary_section else ""}
+{(chr(10) + glossary_section + chr(10)) if glossary_section else ""}
 EMOTION GUIDE — each bubble has an "emotion" field inferred from punctuation.
 Match the emotional INTENSITY of the original, not just the literal meaning:
 - "excited/shouting"      → energetic vocabulary, exclamation marks (e.g. «Невероятно!!» not «Я рада»)
@@ -1089,47 +1070,18 @@ CRITICAL OUTPUT RULES:
 
 OUTPUT (JSON array of {n} items):"""
 
-    raw = ""
+
+def _call_translation_llm(prompt: str, chunk_idx: int, retries: int) -> str:
     for attempt in range(retries):
         try:
-            raw = ollama(LLM_MODEL, prompt, timeout=600, num_predict=dyn_predict)
-            break
+            return ollama(LLM_MODEL, prompt, timeout=600, num_predict=6000)
         except requests.exceptions.ReadTimeout:
             print(f"     [timeout] chunk {chunk_idx+1}, retry {attempt+1}/{retries}...")
-            raw = ""
+    return ""
 
-    if not raw:
-        for local_id, global_idx in local_to_global.items():
-            missing_indices.append(global_idx)
-        if errors:
-            errors.add(page_idx, "timeout",
-                       f"Chunk {chunk_idx+1} translation failed — all timeouts",
-                       bubbles_affected=len(chunk))
-        return
 
-    results = parse_json_array(raw)
-    if not results:
-        if errors:
-            errors.add(page_idx, "json_parse",
-                       f"Chunk {chunk_idx+1}: model response did not parse",
-                       raw_response=raw[:500],
-                       expected_count=len(chunk))
-        for local_id, global_idx in local_to_global.items():
-            missing_indices.append(global_idx)
-        return
-
-    expected = len(chunk)
-    got_real = sum(1 for r in results
-                    if isinstance(r, dict) and r.get("id") and r.get("id") <= expected)
-    if got_real != expected:
-        print(f"     [chunk {chunk_idx+1}] got {got_real}/{expected} real translations "
-              f"({len(results)} total in response, expected {len(all_entries)})")
-        if errors:
-            errors.add(page_idx, "count_mismatch",
-                       f"Chunk {chunk_idx+1}: model returned {got_real} real translations, expected {expected}",
-                       expected_count=expected,
-                       got_count=got_real)
-
+def _apply_chunk_results(results: list, chunk: list, local_to_global: dict,
+                         to_translate: list, missing_indices: list) -> None:
     id_to_translation = {r.get("id"): r.get("translation", "")
                           for r in results if isinstance(r, dict)}
 
@@ -1149,6 +1101,51 @@ OUTPUT (JSON array of {n} items):"""
                 b["translation"] = t
         else:
             missing_indices.append(global_idx)
+
+
+def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
+                     missing_indices: list, page_context: str,
+                     manga_ctx: MangaContext, target_lang: str,
+                     gender_hints: dict, errors, page_idx: int,
+                     retries: int) -> None:
+    chunk_offset = chunk_idx * TRANSLATE_CHUNK_SIZE
+    local_to_global = {i + 1: chunk_offset + i for i in range(len(chunk))}
+
+    entries = _build_chunk_entries(chunk, gender_hints)
+    prompt = _build_translation_prompt(entries, page_context, manga_ctx, target_lang)
+    raw = _call_translation_llm(prompt, chunk_idx, retries)
+
+    if not raw:
+        missing_indices.extend(local_to_global.values())
+        if errors:
+            errors.add(page_idx, "timeout",
+                       f"Chunk {chunk_idx+1} translation failed — all timeouts",
+                       bubbles_affected=len(chunk))
+        return
+
+    results = parse_json_array(raw)
+    if not results:
+        if errors:
+            errors.add(page_idx, "json_parse",
+                       f"Chunk {chunk_idx+1}: model response did not parse",
+                       raw_response=raw[:500],
+                       expected_count=len(chunk))
+        missing_indices.extend(local_to_global.values())
+        return
+
+    expected = len(chunk)
+    got_real = sum(1 for r in results
+                    if isinstance(r, dict) and r.get("id") and r.get("id") <= expected)
+    if got_real != expected:
+        print(f"     [chunk {chunk_idx+1}] got {got_real}/{expected} real translations "
+              f"({len(results)} total in response, expected {len(entries)})")
+        if errors:
+            errors.add(page_idx, "count_mismatch",
+                       f"Chunk {chunk_idx+1}: model returned {got_real} real translations, expected {expected}",
+                       expected_count=expected,
+                       got_count=got_real)
+
+    _apply_chunk_results(results, chunk, local_to_global, to_translate, missing_indices)
 
 
 def _translate_persistent(bubble: dict, page_context: str,
@@ -2064,14 +2061,90 @@ def _fit_at_exact_size(draw, text: str, box_w: int, box_h: int,
     return font, lines, heights, spacing
 
 
+def _contains_cjk(text: str) -> bool:
+    return any('぀' <= c <= 'ヿ' or '一' <= c <= '鿿' for c in text)
+
+
+def _extract_bubble_style(b: dict) -> dict:
+    raw_oc = b.get("outline_color")
+    return dict(
+        font_path=b.get("font_path"),
+        font_size_override=b.get("font_size"),
+        text_align=b.get("text_align", "center") or "center",
+        bold=bool(b.get("bold", False)),
+        italic=bool(b.get("italic", False)),
+        underline=bool(b.get("underline", False)),
+        outline_color=tuple(raw_oc) if raw_oc else None,
+        outline_width=int(b.get("outline_width", 0) or 0),
+    )
+
+
+def _render_bubble_block(translation: str, color: tuple, style: dict,
+                         box: tuple, eff: tuple, text_angle: float) -> Image.Image:
+    bx, by, bw, bh = box
+    ex, ey, ew, eh = eff
+    off_x, off_y = ex - bx, ey - by
+
+    if abs(text_angle) > VERTICAL_TEXT_ANGLE:
+        rot_deg = -90 if text_angle > 0 else 90
+        block = _render_text_block(translation, bh, bw, color, **style)
+        block = block.rotate(rot_deg, expand=True,
+                             resample=Image.Resampling.BICUBIC)
+        bw_r, bh_r = block.size
+        cx_r = max(0, (bw_r - bw) // 2)
+        cy_r = max(0, (bh_r - bh) // 2)
+        return block.crop((cx_r + off_x, cy_r + off_y,
+                           cx_r + off_x + ew, cy_r + off_y + eh))
+
+    if abs(text_angle) > 1:
+        ss = ROTATE_SUPERSAMPLE
+        big = _render_text_block(translation, bw * ss, bh * ss, color, **style)
+        big = big.rotate(-text_angle, expand=True,
+                         resample=Image.Resampling.BICUBIC)
+        bw_big, bh_big = big.size
+        cx = max(0, (bw_big - bw * ss) // 2)
+        cy = max(0, (bh_big - bh * ss) // 2)
+        big = big.crop((cx, cy, cx + bw * ss, cy + bh * ss))
+        block_full = big.resize((bw, bh), Image.Resampling.LANCZOS)
+        return block_full.crop((off_x, off_y, off_x + ew, off_y + eh))
+
+    block = _render_text_block(translation, bw, bh, color, **style)
+    if off_x or off_y or ew != bw or eh != bh:
+        block = block.crop((off_x, off_y, off_x + ew, off_y + eh))
+    return block
+
+
+def _draw_debug_overlay(pil: Image.Image, bubbles: list[dict]) -> None:
+    draw = ImageDraw.Draw(pil)
+    try:
+        font_small = ImageFont.truetype(DEFAULT_FONT, 14)
+    except OSError:
+        font_small = ImageFont.load_default()
+
+    for i, b in enumerate(bubbles):
+        x, y, w, h = b["x"], b["y"], b["width"], b["height"]
+        if not b.get("text"):
+            color = (255, 0, 0)
+        elif not b.get("translation"):
+            color = (255, 140, 0)
+        elif b["class"] == "text_bubble":
+            color = (0, 200, 0)
+        else:
+            color = (0, 150, 255)
+
+        draw.rectangle([(x, y), (x+w, y+h)], outline=color, width=2)
+        draw.rectangle([(x, y-22), (x+18, y)], fill=color)
+        draw.text((x+3, y-20), str(i+1), fill=(0, 0, 0), font=font_small)
+
+
 def draw_results(img_cv: np.ndarray, bubbles: list[dict],
                  debug: bool = False, page_name: str = "") -> np.ndarray:
     print("  Segmenting text regions (CTD)...")
-    _user_angles = {id(b): b["_text_angle"] for b in bubbles if "_text_angle" in b}
+    user_angles = {id(b): b["_text_angle"] for b in bubbles if "_text_angle" in b}
     _compute_text_masks(img_cv, bubbles, page_name=page_name)
     for b in bubbles:
-        if id(b) in _user_angles:
-            b["_text_angle"] = _user_angles[id(b)]
+        if id(b) in user_angles:
+            b["_text_angle"] = user_angles[id(b)]
 
     for b in bubbles:
         if b.get("translation") and b.get("_text_color") is None:
@@ -2079,7 +2152,6 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
 
     print("  Inpainting original text (LaMa)...")
     inpainted = inpaint_page(img_cv, bubbles)
-
     pil = Image.fromarray(cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
     render_order = sorted(
@@ -2096,95 +2168,146 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
 
         smaller = [s for s in render_order[i + 1:] if s.get("translation")]
         ex, ey, ew, eh = _effective_box(bx, by, bw, bh, smaller)
-
-        if ew < 20 or eh < 20:
+        if ew < MIN_EFFECTIVE_BOX or eh < MIN_EFFECTIVE_BOX:
             continue
 
         text_angle = b.get("_text_angle", 0.0)
+        if abs(text_angle) > VERTICAL_TEXT_ANGLE and _contains_cjk(b.get("text", "")):
+            print(f"  [jp→ru] bubble {i+1} angle={text_angle:.0f}° japanese → render horizontal")
+            text_angle = 0.0
 
-        if abs(text_angle) > 45:
-            src = b.get("text", "")
-            if any('぀' <= c <= 'ヿ' or '一' <= c <= '鿿' for c in src):
-                text_angle = 0.0
-                print(f"  [jp→ru] bubble {i+1} angle={b['_text_angle']:.0f}° japanese → render horizontal")
-
-        text_align = b.get("text_align", "center") or "center"
-        b_bold     = bool(b.get("bold", False))
-        b_italic   = bool(b.get("italic", False))
-        b_underline = bool(b.get("underline", False))
-        raw_oc     = b.get("outline_color")
-        b_outline_color = tuple(raw_oc) if raw_oc else None
-        b_outline_width = int(b.get("outline_width", 0) or 0)
-
-        _style = dict(
-            font_path=b.get("font_path"),
-            font_size_override=b.get("font_size"),
-            text_align=text_align,
-            bold=b_bold, italic=b_italic, underline=b_underline,
-            outline_color=b_outline_color, outline_width=b_outline_width,
+        block = _render_bubble_block(
+            translation, color, _extract_bubble_style(b),
+            (bx, by, bw, bh), (ex, ey, ew, eh), text_angle,
         )
-
-        off_x = ex - bx
-        off_y = ey - by
-
-        if abs(text_angle) > 45:
-            rot_deg = -90 if text_angle > 0 else 90
-            block = _render_text_block(translation, bh, bw, color, **_style)
-            block = block.rotate(rot_deg, expand=True,
-                                 resample=Image.Resampling.BICUBIC)
-            bw_r, bh_r = block.size
-            cx_r = max(0, (bw_r - bw) // 2)
-            cy_r = max(0, (bh_r - bh) // 2)
-            block = block.crop((cx_r + off_x, cy_r + off_y,
-                                 cx_r + off_x + ew, cy_r + off_y + eh))
-        elif abs(text_angle) > 1:
-            SS = 2
-            big = _render_text_block(translation, bw * SS, bh * SS, color, **_style)
-            big = big.rotate(-text_angle, expand=True,
-                             resample=Image.Resampling.BICUBIC)
-            bw_big, bh_big = big.size
-            cx = max(0, (bw_big - bw * SS) // 2)
-            cy = max(0, (bh_big - bh * SS) // 2)
-            big = big.crop((cx, cy, cx + bw * SS, cy + bh * SS))
-            block_full = big.resize((bw, bh), Image.Resampling.LANCZOS)
-            block = block_full.crop((off_x, off_y, off_x + ew, off_y + eh))
-        else:
-            block = _render_text_block(translation, bw, bh, color, **_style)
-            if off_x or off_y or ew != bw or eh != bh:
-                block = block.crop((off_x, off_y, off_x + ew, off_y + eh))
-
         pil.paste(block, (ex, ey), block)
 
     if debug:
-        draw = ImageDraw.Draw(pil)
-        try:
-            font_small = ImageFont.truetype(DEFAULT_FONT, 14)
-        except OSError:
-            font_small = ImageFont.load_default()
-
-        for i, b in enumerate(bubbles):
-            x, y, w, h = b["x"], b["y"], b["width"], b["height"]
-            translation = b.get("translation", "")
-            raw_text = b.get("text", "")
-
-            if not raw_text:
-                color = (255, 0, 0)
-            elif not translation:
-                color = (255, 140, 0)
-            elif b["class"] == "text_bubble":
-                color = (0, 200, 0)
-            else:
-                color = (0, 150, 255)
-
-            draw.rectangle([(x, y), (x+w, y+h)], outline=color, width=2)
-            draw.rectangle([(x, y-22), (x+18, y)], fill=color)
-            draw.text((x+3, y-20), str(i+1), fill=(0, 0, 0), font=font_small)
+        _draw_debug_overlay(pil, bubbles)
 
     return cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
 
 
 def reading_order(bubble: dict, band: int = 150) -> tuple:
     return (bubble["y"] // max(1, band), -bubble["x"])
+
+
+def _is_covered_by(bubble: dict, others: list[dict], min_frac: float) -> bool:
+    bx, by, bw, bh = bubble["x"], bubble["y"], bubble["width"], bubble["height"]
+    for e in others:
+        ix = max(0, min(bx + bw, e["x"] + e["width"]) - max(bx, e["x"]))
+        iy = max(0, min(by + bh, e["y"] + e["height"]) - max(by, e["y"]))
+        if ix * iy > min_frac * bw * bh:
+            return True
+    return False
+
+
+def _detect_text_bubbles(img_cv: np.ndarray, image_pil: Image.Image) -> list[dict]:
+    low_threshold = min(DETECT_THRESHOLD, SFX_THRESHOLD)
+    detections = detect_bubbles(image_pil, threshold=low_threshold)
+
+    bubbles = [b for b in detections if b["confidence"] >= DETECT_THRESHOLD]
+    for b in detections:
+        if b["confidence"] >= DETECT_THRESHOLD or b["class"] != "text_free":
+            continue
+        if not _is_covered_by(b, bubbles, SFX_OVERLAP_FRAC):
+            bubbles.append(b)
+            print(f"  [sfx+] text_free @ ({b['x']},{b['y']}) score={b['confidence']:.2f}")
+
+    bubbles = _clip_overlapping_boxes(bubbles, min_area=MIN_BUBBLE_AREA)
+    band = max(READING_BAND_MIN, img_cv.shape[0] // READING_BAND_DIVISOR)
+    return sorted(
+        [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
+        key=lambda b: reading_order(b, band),
+    )
+
+
+def _handle_intro_page(image_path: str, archive: CharacterArchive,
+                       manga_ctx: MangaContext, page_idx: int,
+                       output_path: str, img_cv: np.ndarray) -> bool:
+    print("\n── Checking: character gallery? ──")
+    if not detect_character_intro_page(image_path):
+        return False
+
+    print("\n── Extracting introductions ──")
+    characters_context = extract_character_intros(image_path, archive, page_idx)
+    print(characters_context)
+    if characters_context == "CHARACTERS ON THIS PAGE: unknown":
+        print("  [intro detect] extraction failed → treating as regular page")
+        return False
+
+    manga_ctx.update("Character introduction page.")
+    cv2.imwrite(output_path, img_cv)
+    print(f"\nSaved (unchanged): {output_path}")
+    print("  ⓘ character introduction page — no translation needed")
+    return True
+
+
+def _ocr_bubbles(img_cv: np.ndarray, text_bubbles: list[dict],
+                 page_idx: int, errors: ErrorLog | None) -> None:
+    print("\n── OCR ──")
+    for i, b in enumerate(text_bubbles):
+        b["text"] = ocr_region(img_cv, b["x"], b["y"], b["width"], b["height"],
+                               idx=i + 1, page_idx=page_idx)
+        b["emotion_hint"] = _infer_emotion_tag(b.get("text", ""))
+        if not b["text"] and errors:
+            errors.add(page_idx, "ocr_empty",
+                       f"Bubble #{i+1}: OCR returned no text after two passes",
+                       bubble_idx=i+1,
+                       bbox=f"({b['x']},{b['y']},{b['width']}x{b['height']})",
+                       crop=os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{i+1:02d}.png"))
+
+
+def _analyze_and_attribute(image_path: str, text_bubbles: list[dict],
+                           archive: CharacterArchive, manga_ctx: MangaContext,
+                           page_idx: int, fast_mode: bool,
+                           errors: ErrorLog | None, stage) -> tuple[str, str, str]:
+    if fast_mode:
+        print("\n[fast mode] skipping analyze + attribute stages")
+        for b in text_bubbles:
+            b["speaker"] = "unknown"
+            b["gender"] = "unknown"
+        return "CHARACTERS ON THIS PAGE: unknown", "", ""
+
+    print("\n── Page analysis ──")
+    stage("stage_analyze")
+    characters_context, page_context, page_summary = analyze_page_full(
+        image_path, archive, manga_ctx, page_idx
+    )
+    print(characters_context)
+    print(f"  context: {page_context}")
+    print(f"  summary: {page_summary}")
+    if characters_context == "CHARACTERS ON THIS PAGE: unknown" and errors:
+        errors.add(page_idx, "character_parse_failed",
+                   "Character analysis produced no result — JSON did not parse",
+                   raw_response_snippet=characters_context)
+
+    print("\n── Attribution ──")
+    stage("stage_attribute")
+    attribute_bubbles(image_path, text_bubbles, page_context,
+                      characters_context, archive)
+    for i, b in enumerate(text_bubbles):
+        print(f"  [{i+1}] {b.get('speaker', '?')} ({b.get('gender', '?')}): "
+              f"{b.get('text', '')[:40]}")
+        if b.get("text") and b.get("speaker") == "unknown" and errors:
+            errors.add(page_idx, "speaker_unknown",
+                       f"Bubble #{i+1}: could not determine speaker",
+                       bubble_idx=i+1,
+                       text=b.get("text", "")[:100])
+
+    return characters_context, page_context, page_summary
+
+
+def _print_page_stats(text_bubbles: list[dict], output_path: str) -> None:
+    empty_ocr = sum(1 for b in text_bubbles if not b.get("text"))
+    no_translation = sum(1 for b in text_bubbles
+                          if b.get("text") and not b.get("translation"))
+    err_translation = sum(1 for b in text_bubbles
+                          if b.get("translation") == "[error]")
+    ok = len(text_bubbles) - empty_ocr - no_translation - err_translation
+    print(f"\nSaved: {output_path}")
+    print(f"  ✓ translated: {ok} | ⚠ no translation: {no_translation} | "
+          f"✗ OCR empty: {empty_ocr} | ✗ translation error: {err_translation}")
 
 
 def process_page(image_path: str, page_idx: int,
@@ -2204,36 +2327,13 @@ def process_page(image_path: str, page_idx: int,
     print(f"\n{'='*60}")
     print(f"Page {page_idx}: {image_path}")
     if fast_mode:
-        print(f"[fast mode] skipping page analysis and speaker attribution")
+        print("[fast mode] skipping page analysis and speaker attribution")
     print(f"{'='*60}")
 
     stage("stage_detect")
-
     img_cv = read_image(image_path)
     image_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
-
-    low_threshold = min(DETECT_THRESHOLD, SFX_THRESHOLD)
-    detections = detect_bubbles(image_pil, threshold=low_threshold)
-
-    bubbles = [b for b in detections if b["confidence"] >= DETECT_THRESHOLD]
-    for b in detections:
-        if b["confidence"] >= DETECT_THRESHOLD or b["class"] != "text_free":
-            continue
-        bx, by, bw, bh = b["x"], b["y"], b["width"], b["height"]
-        covered = any(
-            max(0, min(bx + bw, e["x"] + e["width"])  - max(bx, e["x"])) *
-            max(0, min(by + bh, e["y"] + e["height"]) - max(by, e["y"])) > SFX_OVERLAP_FRAC * bw * bh
-            for e in bubbles
-        )
-        if not covered:
-            bubbles.append(b)
-            print(f"  [sfx+] text_free @ ({bx},{by}) score={b['confidence']:.2f}")
-    bubbles = _clip_overlapping_boxes(bubbles, min_area=MIN_BUBBLE_AREA)
-    band = max(READING_BAND_MIN, img_cv.shape[0] // READING_BAND_DIVISOR)
-    text_bubbles = sorted(
-        [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
-        key=lambda b: reading_order(b, band),
-    )
+    text_bubbles = _detect_text_bubbles(img_cv, image_pil)
     print(f"Bubbles: {len(text_bubbles)}")
 
     if not text_bubbles and errors:
@@ -2242,70 +2342,17 @@ def process_page(image_path: str, page_idx: int,
                    image=image_path)
 
     if not fast_mode and len(text_bubbles) <= 2:
-        print("\n── Checking: character gallery? ──")
-        if detect_character_intro_page(image_path):
-            print("\n── Extracting introductions ──")
-            characters_context = extract_character_intros(image_path, archive, page_idx)
-            print(characters_context)
+        if _handle_intro_page(image_path, archive, manga_ctx, page_idx,
+                              output_path, img_cv):
+            return text_bubbles
 
-            if characters_context != "CHARACTERS ON THIS PAGE: unknown":
-                manga_ctx.update("Character introduction page.")
-                cv2.imwrite(output_path, img_cv)
-                print(f"\nSaved (unchanged): {output_path}")
-                print(f"  ⓘ character introduction page — no translation needed")
-                return text_bubbles
-            else:
-                print("  [intro detect] extraction failed → treating as regular page")
-
-    print("\n── OCR ──")
     stage("stage_ocr")
-    for i, b in enumerate(text_bubbles):
-        b["text"] = ocr_region(img_cv, b["x"], b["y"], b["width"], b["height"],
-                               idx=i + 1, page_idx=page_idx)
-        b["emotion_hint"] = _infer_emotion_tag(b.get("text", ""))
-        if not b["text"] and errors:
-            errors.add(page_idx, "ocr_empty",
-                       f"Bubble #{i+1}: OCR returned no text after two passes",
-                       bubble_idx=i+1,
-                       bbox=f"({b['x']},{b['y']},{b['width']}x{b['height']})",
-                       crop=os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{i+1:02d}.png"))
+    _ocr_bubbles(img_cv, text_bubbles, page_idx, errors)
 
-    if fast_mode:
-        print("\n[fast mode] skipping analyze + attribute stages")
-        characters_context = "CHARACTERS ON THIS PAGE: unknown"
-        page_context = ""
-        page_summary = ""
-        for b in text_bubbles:
-            b["speaker"] = "unknown"
-            b["gender"] = "unknown"
-    else:
-        print("\n── Page analysis ──")
-        stage("stage_analyze")
-        characters_context, page_context, page_summary = analyze_page_full(
-            image_path, archive, manga_ctx, page_idx
-        )
-        print(characters_context)
-        print(f"  context: {page_context}")
-        print(f"  summary: {page_summary}")
-
-        if characters_context == "CHARACTERS ON THIS PAGE: unknown" and errors:
-            errors.add(page_idx, "character_parse_failed",
-                       "Character analysis produced no result — JSON did not parse",
-                       raw_response_snippet=characters_context)
-
-        print("\n── Attribution ──")
-        stage("stage_attribute")
-        text_bubbles = attribute_bubbles(
-            image_path, text_bubbles, page_context, characters_context, archive
-        )
-        for i, b in enumerate(text_bubbles):
-            print(f"  [{i+1}] {b.get('speaker', '?')} ({b.get('gender', '?')}): "
-                  f"{b.get('text', '')[:40]}")
-            if b.get("text") and b.get("speaker") == "unknown" and errors:
-                errors.add(page_idx, "speaker_unknown",
-                           f"Bubble #{i+1}: could not determine speaker",
-                           bubble_idx=i+1,
-                           text=b.get("text", "")[:100])
+    _, page_context, page_summary = _analyze_and_attribute(
+        image_path, text_bubbles, archive, manga_ctx, page_idx,
+        fast_mode, errors, stage,
+    )
 
     print("\n── Translation ──")
     stage("stage_translate")
@@ -2321,15 +2368,7 @@ def process_page(image_path: str, page_idx: int,
                              page_name=os.path.splitext(os.path.basename(output_path))[0])
     cv2.imwrite(output_path, annotated)
 
-    empty_ocr = sum(1 for b in text_bubbles if not b.get("text"))
-    no_translation = sum(1 for b in text_bubbles
-                          if b.get("text") and not b.get("translation"))
-    err_translation = sum(1 for b in text_bubbles
-                          if b.get("translation") == "[error]")
-    ok = len(text_bubbles) - empty_ocr - no_translation - err_translation
-    print(f"\nSaved: {output_path}")
-    print(f"  ✓ translated: {ok} | ⚠ no translation: {no_translation} | "
-          f"✗ OCR empty: {empty_ocr} | ✗ translation error: {err_translation}")
+    _print_page_stats(text_bubbles, output_path)
     return text_bubbles
 
 
@@ -2370,6 +2409,11 @@ def process_directory(input_dir: str, output_dir: str = "results",
     if llm_model:
         LLM_MODEL = llm_model
         print(f"[llm] Using model: {llm_model}")
+    if not LLM_MODEL:
+        raise ValueError(
+            "No LLM model selected. Pass llm_model=... (e.g. a multimodal "
+            "Ollama model like 'gemma3:27b') — there is no default."
+        )
     if ollama_url:
         OLLAMA_URL = ollama_url
         print(f"[llm] Ollama URL: {ollama_url}")
