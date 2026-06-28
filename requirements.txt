@@ -9,7 +9,7 @@ numpy>=1.26
 # Глубокое обучение
 torch>=2.3                  # включая поддержку TorchScript для LaMa
 torchvision>=0.18           # требуется transformers для AutoImageProcessor
-transformers>=4.44          # RT-DETRv2 для детекции баблов
+transformers>=5.0           # RT-DETRv2 (детекция баблов) + GLM-OCR (glm_ocr, OCR)
 huggingface_hub>=0.24       # скачивание anime-big-lama
 # Сегментация текста — Comic Text Detector (ONNX, специализирован для манги)
 # Веса (~30 MB) скачиваются с HuggingFace при первом запуске автоматически.

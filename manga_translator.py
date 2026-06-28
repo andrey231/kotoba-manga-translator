@@ -153,6 +153,30 @@ def get_detector():
         _detector_processor, _detector_model = load_detector()
     return _detector_processor, _detector_model
 
+
+OCR_HF_ID = "zai-org/GLM-OCR"
+_ocr_processor = None
+_ocr_model = None
+_ocr_loaded = False
+
+
+def get_ocr_model():
+    global _ocr_processor, _ocr_model, _ocr_loaded
+    if not _ocr_loaded:
+        _ocr_loaded = True
+        try:
+            from transformers import AutoProcessor, AutoModelForImageTextToText
+            print(f"[ocr] Loading {OCR_HF_ID} (transformers)...")
+            _ocr_processor = AutoProcessor.from_pretrained(OCR_HF_ID)
+            _ocr_model = AutoModelForImageTextToText.from_pretrained(
+                OCR_HF_ID, dtype="auto",
+            ).to(DEVICE).eval()
+            print(f"[ocr] Loaded ({DEVICE})")
+        except Exception as e:
+            print(f"[ocr] ⚠ transformers OCR unavailable ({e}); falling back to Ollama glm-ocr")
+            _ocr_processor = _ocr_model = None
+    return _ocr_processor, _ocr_model
+
 _ctd_session = None
 _CTD_MODEL_ID   = "mayocream/comic-text-detector-onnx"
 _CTD_MODEL_FILE = "comic-text-detector.onnx"
@@ -1343,10 +1367,73 @@ def _clean_ocr(raw: str) -> str:
     return cleaned
 
 
+def _ocr_stream(crop_path: str) -> str:
+    payload = {
+        "model": "glm-ocr:latest",
+        "prompt": OCR_PROMPT,
+        "images": [image_to_base64(crop_path)],
+        "stream": True,
+        "options": {"temperature": 0.0, "num_predict": OCR_NUM_PREDICT, "stop": OCR_STOP},
+    }
+    kept: list[str] = []
+    seen: set[str] = set()
+    buf = ""
+
+    def _take(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return True
+        if s.startswith("```") or s in seen:
+            return False
+        seen.add(s)
+        kept.append(line)
+        return True
+
+    try:
+        with requests.post(OLLAMA_URL, json=payload, timeout=60, stream=True) as r:
+            for chunk in r.iter_lines():
+                if not chunk:
+                    continue
+                piece = json.loads(chunk).get("response", "")
+                buf += piece
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    if not _take(line):
+                        return "\n".join(kept)
+    except requests.exceptions.RequestException:
+        return "\n".join(kept)
+
+    _take(buf)
+    return "\n".join(kept)
+
+
+def _ocr_infer(crop_path: str) -> str | None:
+    processor, model = get_ocr_model()
+    if model is None:
+        return None
+    pil_img = Image.open(crop_path).convert("RGB")
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": pil_img},
+            {"type": "text", "text": OCR_PROMPT},
+        ],
+    }]
+    inputs = processor.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=True,
+        return_dict=True, return_tensors="pt",
+    ).to(model.device)
+    with torch.no_grad():
+        generated = model.generate(**inputs, max_new_tokens=OCR_NUM_PREDICT)
+    new_tokens = generated[0][inputs["input_ids"].shape[1]:]
+    return processor.decode(new_tokens, skip_special_tokens=True).strip()
+
+
 def _ocr_call(crop_path: str) -> str:
-    raw = ollama("glm-ocr:latest", OCR_PROMPT, crop_path, timeout=60,
-                 temperature=0.0, num_predict=OCR_NUM_PREDICT, stop=OCR_STOP)
-    return _clean_ocr(raw)
+    text = _ocr_infer(crop_path)
+    if text is None:
+        text = _ocr_stream(crop_path)
+    return _clean_ocr(text)
 
 
 def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
