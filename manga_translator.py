@@ -64,23 +64,27 @@ BALANCED_LINE_TOLERANCE = 1.3
 MIN_EFFECTIVE_BOX = 20
 VERTICAL_TEXT_ANGLE = 45
 ROTATE_SUPERSAMPLE = 2
+MIN_FONT_SIZE = 2
 TRANSLATE_NUM_CTX = 8192
 
 OCR_NUM_PREDICT = 256
 OCR_PROMPT = "Text Recognition:"
 OCR_STOP = ["```"]
 
-_TRANSLATION_SCHEMA = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "integer"},
-            "translation": {"type": "string"},
+def _translation_schema(n: int) -> dict:
+    return {
+        "type": "array",
+        "minItems": n,
+        "maxItems": n,
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "translation": {"type": "string"},
+            },
+            "required": ["id", "translation"],
         },
-        "required": ["id", "translation"],
-    },
-}
+    }
 
 GLOSSARY: list[dict] = []
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
@@ -1126,16 +1130,22 @@ def _build_translation_prompt(entries: list[dict], page_context: str,
     return "\n\n".join(parts)
 
 
-def _call_translation_llm(prompt: str, system: str,
+def _call_translation_llm(prompt: str, system: str, n: int,
                           chunk_idx: int, retries: int) -> str:
     for attempt in range(retries):
         try:
             return ollama(LLM_MODEL, prompt, timeout=600, num_predict=6000,
-                          system=system, fmt=_TRANSLATION_SCHEMA,
+                          system=system, fmt=_translation_schema(n),
                           num_ctx=TRANSLATE_NUM_CTX)
         except requests.exceptions.ReadTimeout:
             print(f"     [timeout] chunk {chunk_idx+1}, retry {attempt+1}/{retries}...")
     return ""
+
+
+def _looks_like_commentary(t: str, src: str) -> bool:
+    if any(t.lower().startswith(m) for m in _META_MARKERS):
+        return True
+    return len(src) <= 15 and len(t) > max(40, len(src) * 6)
 
 
 def _apply_chunk_results(results: list, chunk: list, local_to_global: dict,
@@ -1153,7 +1163,7 @@ def _apply_chunk_results(results: list, chunk: list, local_to_global: dict,
                 translation = r.get("translation", "")
         if translation and translation.strip():
             t = translation.strip()
-            if any(t.lower().startswith(m) for m in _META_MARKERS):
+            if _looks_like_commentary(t, b.get("text", "")):
                 missing_indices.append(global_idx)
             else:
                 b["translation"] = t
@@ -1172,7 +1182,7 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
     entries = _build_chunk_entries(chunk, gender_hints)
     prompt = _build_translation_prompt(entries, page_context, manga_ctx)
     system = _translation_system(target_lang)
-    raw = _call_translation_llm(prompt, system, chunk_idx, retries)
+    raw = _call_translation_llm(prompt, system, len(entries), chunk_idx, retries)
 
     if not raw:
         missing_indices.extend(local_to_global.values())
@@ -1193,16 +1203,17 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
         return
 
     expected = len(chunk)
-    got_real = sum(1 for r in results
-                    if isinstance(r, dict) and r.get("id") and r.get("id") <= expected)
-    if got_real != expected:
-        print(f"     [chunk {chunk_idx+1}] got {got_real}/{expected} real translations "
-              f"({len(results)} total in response, expected {len(entries)})")
+    valid = [r for r in results if isinstance(r, dict)]
+    if len(valid) != expected:
+        print(f"     [chunk {chunk_idx+1}] count mismatch: got {len(valid)} items, "
+              f"expected {expected} → one-by-one fallback")
         if errors:
             errors.add(page_idx, "count_mismatch",
-                       f"Chunk {chunk_idx+1}: model returned {got_real} real translations, expected {expected}",
+                       f"Chunk {chunk_idx+1}: model returned {len(valid)} items, expected {expected}",
                        expected_count=expected,
-                       got_count=got_real)
+                       got_count=len(valid))
+        missing_indices.extend(local_to_global.values())
+        return
 
     _apply_chunk_results(results, chunk, local_to_global, to_translate, missing_indices)
 
@@ -2011,7 +2022,7 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
         return font, [text], [12], 2
 
     def _search(allow_hyphenation: bool):
-        lo, hi = 6, MAX_FONT_SIZE
+        lo, hi = MIN_FONT_SIZE, MAX_FONT_SIZE
         best_local = None
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -2034,8 +2045,14 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
     if best is not None:
         return best
 
-    font = try_load_font(5) or ImageFont.load_default()
-    return font, [text[:20]], [8], 2
+    font = try_load_font(MIN_FONT_SIZE) or ImageFont.load_default()
+    words = text.split() or [text]
+    lines = wrap_greedy(words, font, allow_hyphenation=True) or [text]
+    try:
+        lh = line_height(font)
+    except Exception:
+        lh = 8
+    return font, lines, [lh] * len(lines), 2
 
 
 def _effective_box(bx: int, by: int, bw: int, bh: int,
