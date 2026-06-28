@@ -394,6 +394,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     "font_path": b.get("font_path"),
                     "font_size": b.get("font_size"),
                     "text_color": list(b["_text_color"]) if b.get("_text_color") else None,
+                    "outline_color": list(b["outline_color"]) if b.get("outline_color") else None,
+                    "outline_width": b.get("outline_width", 0),
                     "class": b.get("class", "text_bubble"),
                     "_text_angle": b.get("_text_angle", 0.0),
                 }

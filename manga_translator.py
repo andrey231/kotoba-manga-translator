@@ -65,6 +65,7 @@ MIN_EFFECTIVE_BOX = 20
 VERTICAL_TEXT_ANGLE = 45
 ROTATE_SUPERSAMPLE = 2
 MIN_FONT_SIZE = 2
+OUTLINE_DELTA = 60
 TRANSLATE_NUM_CTX = 8192
 
 OCR_NUM_PREDICT = 256
@@ -1607,6 +1608,40 @@ def _binarize_text_mask(crop_gray: np.ndarray) -> np.ndarray:
     return binary
 
 
+def _estimate_text_angle(mask: np.ndarray) -> float:
+    connect = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 5))
+    blobs = cv2.dilate(mask, connect)
+    cnts, _ = cv2.findContours(blobs, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    sin2 = cos2 = 0.0
+    for c in cnts:
+        if cv2.contourArea(c) < 20:
+            continue
+        rect = cv2.minAreaRect(c)
+        rw, rh = rect[1]
+        if rw < 1 or rh < 1 or max(rw, rh) / min(rw, rh) < 2.0:
+            continue
+        box = cv2.boxPoints(rect)
+        p1, p2 = max(((box[i], box[(i + 1) % 4]) for i in range(4)),
+                     key=lambda e: float(np.hypot(*(e[1] - e[0]))))
+        d = p2 - p1
+        length = float(np.hypot(d[0], d[1]))
+        a = float(np.arctan2(d[1], d[0]))
+        sin2 += length * np.sin(2 * a)
+        cos2 += length * np.cos(2 * a)
+
+    if sin2 == 0.0 and cos2 == 0.0:
+        return 0.0
+    avg = 0.5 * float(np.degrees(np.arctan2(sin2, cos2)))
+    if avg > 90:
+        avg -= 180
+    if avg <= -90:
+        avg += 180
+    if abs(avg) > 60:
+        return 0.0
+    return avg
+
+
 def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
                         page_name: str = "") -> None:
     active = [b for b in bubbles
@@ -1641,22 +1676,7 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
         m[y:y2, x:x2] = combined
         b["_sam2_mask"] = m
 
-        pts = cv2.findNonZero(combined)
-        if pts is not None and len(pts) >= 30:
-            coords = pts.reshape(-1, 2).astype(np.float64)
-            centered = coords - coords.mean(axis=0)
-            _, sv, vt = np.linalg.svd(centered, full_matrices=False)
-            elongation = sv[0] / max(sv[1], 1e-6)
-            if elongation >= 2.0:
-                dx, dy = vt[0]
-                angle = float(np.degrees(np.arctan2(dy, dx)))
-                if angle > 90:  angle -= 180
-                if angle <= -90: angle += 180
-                b["_text_angle"] = angle
-            else:
-                b["_text_angle"] = 0.0
-        else:
-            b["_text_angle"] = 0.0
+        b["_text_angle"] = _estimate_text_angle(combined)
 
 
         if MASK_DEBUG_DIR:
@@ -1728,6 +1748,47 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict,
         if max(abs(rv - br), abs(gv - bg_g), abs(bv - bb)) < 40:
             return default
     return (int(rv), int(gv), int(bv))
+
+
+def detect_text_style(img_cv: np.ndarray, bubble: dict) -> tuple:
+    fill = detect_text_color(img_cv, bubble)
+    ih, iw = img_cv.shape[:2]
+    x, y = max(0, bubble["x"]), max(0, bubble["y"])
+    x2 = min(iw, bubble["x"] + bubble["width"])
+    y2 = min(ih, bubble["y"] + bubble["height"])
+    mask_full = bubble.get("_sam2_mask")
+    if mask_full is None or x2 <= x or y2 <= y:
+        return fill, None, 0
+
+    crop = img_cv[y:y2, x:x2]
+    mask = mask_full[y:y2, x:x2]
+    if cv2.countNonZero(mask) < 30:
+        return fill, None, 0
+
+    width_hint = max(2, min(x2 - x, y2 - y) // 25)
+
+    er = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask_t = cv2.erode(mask, er)
+    core = cv2.erode(mask_t, er)
+    edge = cv2.subtract(mask_t, core)
+    core_px = crop[core > 0]
+    edge_px = crop[edge > 0]
+    if len(core_px) >= 15 and len(edge_px) >= 15:
+        core_med = np.median(core_px, axis=0).astype(int)
+        edge_med = np.median(edge_px, axis=0).astype(int)
+        if int(np.abs(core_med - edge_med).sum()) > OUTLINE_DELTA:
+            cb, cg, cr = core_med
+            ob, og, orr = edge_med
+            return (int(cr), int(cg), int(cb)), (int(orr), int(og), int(ob)), width_hint
+
+    area = bubble.get("width", 0) * bubble.get("height", 0)
+    if bubble.get("class") == "text_free" and area >= _LARGE_BUBBLE_PX:
+        bg_px = crop[mask == 0]
+        if len(bg_px) >= 30:
+            bb, bg_g, br = np.median(bg_px, axis=0).astype(int)
+            return fill, (int(br), int(bg_g), int(bb)), width_hint
+
+    return fill, None, 0
 
 
 def _fill_mask_holes(mask: np.ndarray) -> np.ndarray:
@@ -2315,7 +2376,11 @@ def draw_results(img_cv: np.ndarray, bubbles: list[dict],
 
     for b in bubbles:
         if b.get("translation") and b.get("_text_color") is None:
-            b["_text_color"] = detect_text_color(img_cv, b)
+            fill, outline, outline_w = detect_text_style(img_cv, b)
+            b["_text_color"] = fill
+            if outline is not None and not b.get("outline_color"):
+                b["outline_color"] = outline
+                b["outline_width"] = outline_w
 
     print("  Inpainting original text (LaMa)...")
     inpainted = inpaint_page(img_cv, bubbles)
