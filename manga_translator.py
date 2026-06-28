@@ -63,6 +63,23 @@ BALANCED_LINE_TOLERANCE = 1.3
 MIN_EFFECTIVE_BOX = 20
 VERTICAL_TEXT_ANGLE = 45
 ROTATE_SUPERSAMPLE = 2
+TRANSLATE_NUM_CTX = 8192
+
+OCR_NUM_PREDICT = 256
+OCR_PROMPT = "Text Recognition:"
+OCR_STOP = ["```"]
+
+_TRANSLATION_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "translation": {"type": "string"},
+        },
+        "required": ["id", "translation"],
+    },
+}
 
 GLOSSARY: list[dict] = []
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
@@ -486,9 +503,20 @@ def _discover_fallback_models() -> list[str]:
 
 def ollama(model_name: str, prompt: str, image_path: str = None,
            timeout: int = 800, num_predict: int = 6000,
-           temperature: float = 0.1) -> str:
+           temperature: float = 0.1, system: str | None = None,
+           fmt=None, stop: list[str] | None = None,
+           num_ctx: int | None = None,
+           repeat_penalty: float | None = None) -> str:
     global _OLLAMA_CALL_NUM
     import random
+
+    base_opts = {"temperature": temperature, "num_predict": num_predict}
+    if num_ctx is not None:
+        base_opts["num_ctx"] = num_ctx
+    if stop:
+        base_opts["stop"] = stop
+    if repeat_penalty is not None:
+        base_opts["repeat_penalty"] = repeat_penalty
 
     def _call(opts: dict, model: str) -> str:
         global _OLLAMA_CALL_NUM
@@ -499,6 +527,10 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
             "prompt": prompt,
             "stream": False,
         }
+        if system:
+            payload["system"] = system
+        if fmt is not None:
+            payload["format"] = fmt
         if opts:
             payload["options"] = opts
         if image_path:
@@ -510,20 +542,13 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
                            opts, bool(image_path))
         return response
 
-    response = _call(
-        {"temperature": temperature, "num_predict": num_predict},
-        model_name,
-    )
+    response = _call(dict(base_opts), model_name)
     if response:
         return response
 
-    response = _call(
-        {"temperature": temperature, "num_predict": num_predict,
-         "seed": random.randint(1, 100000)},
-        model_name,
-    )
+    response = _call(dict(base_opts, seed=random.randint(1, 100000)), model_name)
     if response:
-        print(f"     [ollama-retry-ok] recovered with new seed")
+        print("     [ollama-retry-ok] recovered with new seed")
         return response
 
     if not LLM_FALLBACK_MODELS:
@@ -532,10 +557,7 @@ def ollama(model_name: str, prompt: str, image_path: str = None,
     for fb_model in LLM_FALLBACK_MODELS:
         print(f"     [ollama-fallback] trying alternate model: {fb_model}")
         try:
-            response = _call(
-                {"temperature": temperature, "num_predict": num_predict},
-                fb_model,
-            )
+            response = _call(dict(base_opts), fb_model)
         except Exception as e:
             print(f"     [ollama-fallback] {fb_model} error: {e}")
             continue
@@ -999,7 +1021,7 @@ def translate_batch(bubbles: list[dict], page_context: str,
 
 
 def _build_chunk_entries(chunk: list, gender_hints: dict) -> list[dict]:
-    entries = [
+    return [
         {
             "id": i + 1,
             "speaker": b["speaker"],
@@ -1009,30 +1031,11 @@ def _build_chunk_entries(chunk: list, gender_hints: dict) -> list[dict]:
         }
         for i, (_, b) in enumerate(chunk)
     ]
-    padding_samples = [
-        ("Narrator", "neutral", "The story continues."),
-        ("Narrator", "neutral", "A new scene begins."),
-        ("Narrator", "neutral", "The page turns."),
-    ]
-    for i in range(max(0, 3 - len(chunk))):
-        spk, gen, txt = padding_samples[i]
-        entries.append({"id": len(chunk) + i + 1, "speaker": spk,
-                        "gender": gen, "text": txt, "emotion": "neutral"})
-    return entries
 
 
-def _build_translation_prompt(entries: list[dict], page_context: str,
-                              manga_ctx: MangaContext, target_lang: str) -> str:
-    n = len(entries)
-    inputs_json = json.dumps(entries, ensure_ascii=False, indent=2)
-    glossary_section = _build_glossary_prompt()
-    return f"""You are translating manga content to {target_lang}.
+def _translation_system(target_lang: str) -> str:
+    return f"""You are a professional manga translator. Translate each bubble's text into {target_lang}.
 
-{manga_ctx.to_prompt()}
-
-PAGE CONTEXT:
-{page_context}
-{(chr(10) + glossary_section + chr(10)) if glossary_section else ""}
 EMOTION GUIDE — each bubble has an "emotion" field inferred from punctuation.
 Match the emotional INTENSITY of the original, not just the literal meaning:
 - "excited/shouting"      → energetic vocabulary, exclamation marks (e.g. «Невероятно!!» not «Я рада»)
@@ -1043,8 +1046,7 @@ Match the emotional INTENSITY of the original, not just the literal meaning:
 - "loud/sfx"              → all-caps or emphatic equivalents for sound effects
 - "neutral"               → natural conversational register
 
-You will receive a JSON array of {n} text bubbles. For EACH bubble translate
-the ENTIRE text content:
+For EACH bubble translate the ENTIRE text content:
 - Dialogue: match the speaker's personality and gender. Preserve both the emotional
   register and its intensity — a bubble tagged "excited/shouting" must feel
   exciting in the translation, not merely semantically correct.
@@ -1056,25 +1058,32 @@ the ENTIRE text content:
 - Only filter genuine OCR noise: isolated stray characters with no meaning
   (e.g. a lone "·" or "|"). Never discard recognizable words or names.
 
-INPUT (JSON array of {n} bubbles):
-{inputs_json}
-
-CRITICAL OUTPUT RULES:
-1. Return EXACTLY {n} translations, one per input bubble, in the SAME order.
-2. Output ONLY a JSON array, no prose before/after, no markdown fences, no comments.
-3. Each item must have "id" (matching input id) and "translation" (string).
-4. The "translation" field must contain ONLY the translated text — no explanations,
-   no notes about your approach, no commentary.
-5. Even for sound effects or single-word lines, produce a translation —
-   never return empty string or skip an item.
-
-OUTPUT (JSON array of {n} items):"""
+Return one object per input bubble, in the SAME order, each with "id" (matching the
+input id) and "translation". The "translation" field must contain ONLY the translated
+text — no explanations or commentary. Always produce a translation, even for single
+words or sound effects."""
 
 
-def _call_translation_llm(prompt: str, chunk_idx: int, retries: int) -> str:
+def _build_translation_prompt(entries: list[dict], page_context: str,
+                              manga_ctx: MangaContext) -> str:
+    inputs_json = json.dumps(entries, ensure_ascii=False, indent=2)
+    glossary_section = _build_glossary_prompt()
+    parts = [manga_ctx.to_prompt()]
+    if page_context:
+        parts.append(f"PAGE CONTEXT:\n{page_context}")
+    if glossary_section:
+        parts.append(glossary_section)
+    parts.append(f"INPUT (JSON array of {len(entries)} bubbles):\n{inputs_json}")
+    return "\n\n".join(parts)
+
+
+def _call_translation_llm(prompt: str, system: str,
+                          chunk_idx: int, retries: int) -> str:
     for attempt in range(retries):
         try:
-            return ollama(LLM_MODEL, prompt, timeout=600, num_predict=6000)
+            return ollama(LLM_MODEL, prompt, timeout=600, num_predict=6000,
+                          system=system, fmt=_TRANSLATION_SCHEMA,
+                          num_ctx=TRANSLATE_NUM_CTX)
         except requests.exceptions.ReadTimeout:
             print(f"     [timeout] chunk {chunk_idx+1}, retry {attempt+1}/{retries}...")
     return ""
@@ -1112,8 +1121,9 @@ def _translate_chunk(chunk: list, chunk_idx: int, to_translate: list,
     local_to_global = {i + 1: chunk_offset + i for i in range(len(chunk))}
 
     entries = _build_chunk_entries(chunk, gender_hints)
-    prompt = _build_translation_prompt(entries, page_context, manga_ctx, target_lang)
-    raw = _call_translation_llm(prompt, chunk_idx, retries)
+    prompt = _build_translation_prompt(entries, page_context, manga_ctx)
+    system = _translation_system(target_lang)
+    raw = _call_translation_llm(prompt, system, chunk_idx, retries)
 
     if not raw:
         missing_indices.extend(local_to_global.values())
@@ -1286,54 +1296,74 @@ def preprocess_crop_minimal(img_cv: np.ndarray, x: int, y: int,
                                value=(255, 255, 255))
 
 
+def _collapse_repeats(text: str) -> str:
+    lines = text.splitlines()
+    out: list[str] = []
+    prev = None
+    for ln in lines:
+        s = ln.strip()
+        if s and s == prev:
+            continue
+        out.append(ln)
+        if s:
+            prev = s
+    collapsed = "\n".join(out)
+
+    stripped = [s for s in (ln.strip() for ln in collapsed.splitlines()) if s]
+    if len(stripped) > 4:
+        from collections import Counter
+        most_common = Counter(stripped).most_common(1)[0][1]
+        if most_common > len(stripped) * 0.5 or len(set(stripped)) <= 2:
+            seen: list[str] = []
+            for s in stripped:
+                if s not in seen:
+                    seen.append(s)
+            collapsed = "\n".join(seen)
+    return collapsed.strip()
+
+
+_OCR_PROMPT_ECHO_MARKERS = (
+    "read and return", "read any text", "return only what is written",
+    "no explanation", "visible in this image", "letters, or characters",
+    "line breaks and layout", "output only the text",
+)
+
+
+def _is_ocr_prompt_echo(s: str) -> bool:
+    low = s.lower()
+    return sum(1 for m in _OCR_PROMPT_ECHO_MARKERS if m in low) >= 2
+
+
+def _clean_ocr(raw: str) -> str:
+    cleaned = _collapse_repeats(clean_text(raw))
+    kept = [ln for ln in cleaned.splitlines() if not _is_ocr_prompt_echo(ln)]
+    cleaned = _collapse_repeats("\n".join(kept))
+    if _is_ocr_prompt_echo(cleaned):
+        return ""
+    return cleaned
+
+
+def _ocr_call(crop_path: str) -> str:
+    raw = ollama("glm-ocr:latest", OCR_PROMPT, crop_path, timeout=60,
+                 temperature=0.0, num_predict=OCR_NUM_PREDICT, stop=OCR_STOP)
+    return _clean_ocr(raw)
+
+
 def ocr_region(img_cv: np.ndarray, x: int, y: int, w: int, h: int,
                idx: int, page_idx: int) -> str:
-    processed = preprocess_crop(img_cv, x, y, w, h)
     os.makedirs(CROPS_DIR, exist_ok=True)
-    crop_path = os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{idx:02d}.png")
-    cv2.imwrite(crop_path, processed)
-    raw = ollama(
-        "glm-ocr:latest",
-        ("Read and return the text in this image. "
-         "Preserve the original line breaks and layout structure. "
-         "Output only the text, no explanation."),
-        crop_path,
-        timeout=60,
-    )
-    cleaned = clean_text(raw)
 
+    crop_path = os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{idx:02d}.png")
+    cv2.imwrite(crop_path, preprocess_crop(img_cv, x, y, w, h))
+    cleaned = _ocr_call(crop_path)
     if cleaned and len(cleaned) >= 3:
         print(f"     [OCR ✓] bubble {idx}: {cleaned[:50]!r}")
         return cleaned
 
     print(f"     [OCR retry] bubble {idx} — trying soft preprocessing")
-    processed2 = preprocess_crop_minimal(img_cv, x, y, w, h)
     crop_path2 = os.path.join(CROPS_DIR, f"p{page_idx:03d}_bubble_{idx:02d}_retry.png")
-    cv2.imwrite(crop_path2, processed2)
-    raw2 = ollama(
-        "glm-ocr:latest",
-        ("Read any text, letters, or characters visible in this image, "
-         "including short sounds, exclamations, sound effects, or single words. "
-         "Return ONLY what is written, no explanation."),
-        crop_path2,
-        timeout=60,
-    )
-    cleaned2 = clean_text(raw2)
-
-    _PROMPT_ECHO_MARKERS = (
-        "read any text", "return only what is written", "no explanation",
-        "visible in this image", "letters, or characters",
-    )
-    def _is_prompt_echo(s: str) -> bool:
-        low = s.lower()
-        return sum(1 for m in _PROMPT_ECHO_MARKERS if m in low) >= 2
-
-    if _is_prompt_echo(cleaned2):
-        print(f"     [OCR echo] bubble {idx}: retry returned prompt echo, discarding")
-        cleaned2 = ""
-    if _is_prompt_echo(cleaned):
-        print(f"     [OCR echo] bubble {idx}: primary returned prompt echo, discarding")
-        cleaned = ""
+    cv2.imwrite(crop_path2, preprocess_crop_minimal(img_cv, x, y, w, h))
+    cleaned2 = _ocr_call(crop_path2)
 
     final = cleaned2 if len(cleaned2) > len(cleaned) else cleaned
 
