@@ -66,6 +66,7 @@ VERTICAL_TEXT_ANGLE = 45
 ROTATE_SUPERSAMPLE = 2
 MIN_FONT_SIZE = 2
 OUTLINE_DELTA = 60
+OUTLINE_BLEND_MARGIN = 30
 TRANSLATE_NUM_CTX = 8192
 
 OCR_NUM_PREDICT = 256
@@ -187,6 +188,8 @@ _ctd_session = None
 _CTD_MODEL_ID   = "mayocream/comic-text-detector-onnx"
 _CTD_MODEL_FILE = "comic-text-detector.onnx"
 _CTD_INPUT_SIZE = 1024
+
+
 def _add_torch_cuda_dll_dir():
     if DEVICE != "cuda" or os.name != "nt":
         return
@@ -1642,6 +1645,32 @@ def _estimate_text_angle(mask: np.ndarray) -> float:
     return avg
 
 
+def _estimate_text_size(mask: np.ndarray) -> int | None:
+    # Size from LINE height (vertical extent of each text row), found via
+    # horizontal projection. Robust to glyph fragmentation on busy backgrounds —
+    # a line spans the same height even if its glyphs break into pieces.
+    rows = (mask > 0).sum(axis=1).astype(float)
+    if rows.max() <= 0:
+        return None
+    active = rows > rows.max() * 0.1
+    bands: list[int] = []
+    start = None
+    for i, a in enumerate(active):
+        if a and start is None:
+            start = i
+        elif not a and start is not None:
+            bands.append(i - start)
+            start = None
+    if start is not None:
+        bands.append(len(active) - start)
+    bands = [h for h in bands if h >= 3]
+    if not bands:
+        return None
+    line_h = float(np.median(bands))
+    font = int(round(line_h * 1.1))
+    return max(MIN_FONT_SIZE, min(font, MAX_FONT_SIZE))
+
+
 def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
                         page_name: str = "") -> None:
     active = [b for b in bubbles
@@ -1677,6 +1706,7 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict],
         b["_sam2_mask"] = m
 
         b["_text_angle"] = _estimate_text_angle(combined)
+        b["_text_size"] = _estimate_text_size(combined)
 
 
         if MASK_DEBUG_DIR:
@@ -1773,20 +1803,25 @@ def detect_text_style(img_cv: np.ndarray, bubble: dict) -> tuple:
     edge = cv2.subtract(mask_t, core)
     core_px = crop[core > 0]
     edge_px = crop[edge > 0]
-    if len(core_px) >= 15 and len(edge_px) >= 15:
+    bg_px = crop[mask == 0]
+    if len(core_px) >= 15 and len(edge_px) >= 15 and len(bg_px) >= 15:
         core_med = np.median(core_px, axis=0).astype(int)
         edge_med = np.median(edge_px, axis=0).astype(int)
-        if int(np.abs(core_med - edge_med).sum()) > OUTLINE_DELTA:
+        bg_med = np.median(bg_px, axis=0).astype(int)
+        # A real outline is a DISTINCT colour, not a blend of fill and background.
+        # Antialiasing at a glyph edge (e.g. red letter → white bg gives pink)
+        # produces a ring whose brightness sits BETWEEN fill and bg → reject.
+        # A genuine outline is brighter (or darker) than BOTH fill and bg.
+        core_b = float(core_med.mean())
+        edge_b = float(edge_med.mean())
+        bg_b = float(bg_med.mean())
+        lo, hi = min(core_b, bg_b), max(core_b, bg_b)
+        is_blend = (lo - OUTLINE_BLEND_MARGIN) <= edge_b <= (hi + OUTLINE_BLEND_MARGIN)
+        distinct = int(np.abs(core_med - edge_med).sum())
+        if distinct > OUTLINE_DELTA and not is_blend:
             cb, cg, cr = core_med
             ob, og, orr = edge_med
             return (int(cr), int(cg), int(cb)), (int(orr), int(og), int(ob)), width_hint
-
-    area = bubble.get("width", 0) * bubble.get("height", 0)
-    if bubble.get("class") == "text_free" and area >= _LARGE_BUBBLE_PX:
-        bg_px = crop[mask == 0]
-        if len(bg_px) >= 30:
-            bb, bg_g, br = np.median(bg_px, axis=0).astype(int)
-            return fill, (int(br), int(bg_g), int(bb)), width_hint
 
     return fill, None, 0
 
@@ -1930,9 +1965,11 @@ def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
 
 
 def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
-                    font_path: str | None = None) -> tuple:
+                    font_path: str | None = None,
+                    max_size: int | None = None) -> tuple:
     if font_path is None:
         font_path = DEFAULT_FONT
+    upper = MAX_FONT_SIZE if not max_size else max(MIN_FONT_SIZE, min(max_size, MAX_FONT_SIZE))
     padding = 6
     usable_w = box_w - padding * 2
     usable_h = box_h - padding * 2
@@ -2091,7 +2128,7 @@ def fit_text_in_box(draw, text: str, box_w: int, box_h: int,
         return font, [text], [12], 2
 
     def _search(allow_hyphenation: bool):
-        lo, hi = MIN_FONT_SIZE, MAX_FONT_SIZE
+        lo, hi = MIN_FONT_SIZE, upper
         best_local = None
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -2166,7 +2203,8 @@ def _render_text_block(text: str, box_w: int, box_h: int,
                         bold: bool = False, italic: bool = False,
                         underline: bool = False,
                         outline_color: tuple | None = None,
-                        outline_width: int = 0) -> Image.Image:
+                        outline_width: int = 0,
+                        max_size: int | None = None) -> Image.Image:
     img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
@@ -2185,7 +2223,7 @@ def _render_text_block(text: str, box_w: int, box_h: int,
         )
     else:
         font, lines, line_heights, spacing = fit_text_in_box(
-            draw, text, box_w, box_h, eff_font
+            draw, text, box_w, box_h, eff_font, max_size=max_size
         )
 
     padding = 6
@@ -2304,6 +2342,7 @@ def _extract_bubble_style(b: dict) -> dict:
         underline=bool(b.get("underline", False)),
         outline_color=tuple(raw_oc) if raw_oc else None,
         outline_width=int(b.get("outline_width", 0) or 0),
+        max_size=b.get("_text_size"),
     )
 
 
@@ -2326,7 +2365,10 @@ def _render_bubble_block(translation: str, color: tuple, style: dict,
 
     if abs(text_angle) > 1:
         ss = ROTATE_SUPERSAMPLE
-        big = _render_text_block(translation, bw * ss, bh * ss, color, **style)
+        ss_style = dict(style)
+        if ss_style.get("max_size"):
+            ss_style["max_size"] = ss_style["max_size"] * ss
+        big = _render_text_block(translation, bw * ss, bh * ss, color, **ss_style)
         big = big.rotate(-text_angle, expand=True,
                          resample=Image.Resampling.BICUBIC)
         bw_big, bh_big = big.size
