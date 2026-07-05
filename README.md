@@ -63,7 +63,7 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 Page image
   │
   ├─► Bubble detection         (RT-DETRv2)
-  ├─► OCR per bubble           (glm-ocr via Ollama)
+  ├─► OCR per bubble           (GLM-OCR via transformers)
   ├─► Page analysis            (vision LLM — characters + scene)
   ├─► Speaker attribution      (vision LLM — who said what)
   ├─► Batch translation        (text LLM — uses speaker, gender, scene)
@@ -76,19 +76,19 @@ A **Fast mode** toggle skips the page-analysis and attribution stages — useful
 ## Requirements
 
 - **Windows 10/11, Linux, or macOS** (Apple Silicon supported)
-- **Ollama** — install from https://ollama.com and pull a few models:
+- **Ollama** — install from https://ollama.com and pull a vision-capable model:
   ```
-  ollama pull gemma4:26b   # or any vision-capable model: llava, gemma4, qwen2.5-vl, etc.
-  ollama pull glm-ocr      # OCR model
+  ollama pull gemma4:26b   # or any vision-capable model: llava, gemma3:27b, qwen2.5-vl, etc.
   ```
-- **~6 GB free disk space** for the portable Python environment
+  The OCR model (GLM-OCR) downloads automatically from HuggingFace on first run — no Ollama pull needed.
+- **~10 GB free disk space** for the portable Python environment and model weights
 - **GPU recommended** — works on CPU but each page takes much longer. NVIDIA cards use CUDA automatically.
 
 ## Quick start (Windows — fully portable)
 
 1. Download or clone the repo into any folder (paths with spaces are fine).
 2. Double-click **`run.bat`**.
-3. On first launch the script downloads a portable Python interpreter (~10 MB) plus all dependencies (~3 GB if CUDA torch is enabled) into a `python_embed/` subfolder. Your system Python is not touched.
+3. On first launch the script downloads a portable Python interpreter (~10 MB) plus all dependencies (~5 GB with CUDA torch) into a `python_embed/` subfolder. Your system Python is not touched.
 4. Your browser opens to http://localhost:8000 automatically.
 5. Drag a chapter (or a single page) onto the page and click translate.
 
@@ -110,11 +110,12 @@ If you'd rather use your system Python:
 ```bash
 python3.11 -m venv venv
 source venv/bin/activate   # or venv\Scripts\activate on Windows
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 python setup.py
 ```
 
-For CUDA, make sure the `--extra-index-url` line in `requirements.txt` matches your CUDA version (default: cu124).
+PyTorch is installed separately so you can pick the right build. `cu128` supports modern NVIDIA cards including RTX 50xx (Blackwell); for older CUDA use the matching index (e.g. `cu121`), or drop the `--index-url` line entirely for a CPU-only build.
 
 ## Usage
 
@@ -126,8 +127,9 @@ Once the web UI is open:
    - **Font** — optional path to a manga font (`Anime Ace`, `CC Wild Words`, etc.); Kotoba auto-picks the best bold font installed on your system
    - **Fast mode** — skip page analysis for quick drafts
    - **Debug boxes** — overlay coloured rectangles showing OCR/translation status per bubble
-2. **Editor** tab — fix any bubble's translation, override font or size for a specific bubble, re-render the page.
+2. **Editor** tab — fix any bubble's translation and restyle it per bubble: font, size, colour, outline, bold/italic/underline, alignment, or rotation; move and resize the text box; then re-render the page.
 3. **Characters** tab — view and edit the auto-built character archive (`characters.json`).
+4. **Glossary** — define fixed term translations (source → target, with an optional note) that are always applied, even when context would suggest otherwise. Handy for names, place names, and recurring jargon so they stay consistent across the whole chapter.
 
 ## Configuration
 
@@ -135,13 +137,13 @@ User preferences (language, model, font, debug toggles) are stored in your brows
 
 The character archive is **`characters.json`** in the project root. You can edit or delete it freely. Deleting it starts a fresh archive.
 
-LLM weights cache to `~/.cache/huggingface/hub/` (anime-big-lama, RT-DETRv2) — Ollama models live wherever you configured Ollama to store them.
+Model weights cache to `~/.cache/huggingface/hub/` (anime-big-lama, RT-DETRv2, GLM-OCR, comic-text-detector) — Ollama models live wherever you configured Ollama to store them.
 
 ## Privacy
 
 Kotoba never sends your images, text, or anything else off your machine. The only network requests are:
 
-- **First launch:** downloads of the portable Python, dependencies, and model weights (LaMa, RT-DETRv2) from python.org, PyPI, and HuggingFace.
+- **First launch:** downloads of the portable Python, dependencies, and model weights (LaMa, RT-DETRv2, GLM-OCR, comic-text-detector) from python.org, PyPI, and HuggingFace.
 - **Each translation:** local HTTP to `localhost:11434` (Ollama).
 
 You can air-gap the machine after the initial setup and it will still work.
@@ -163,7 +165,7 @@ Same applies to scene context: a short summary of each page accumulates over the
 - **Sound effects outside speech bubbles** (the big hand-drawn ガッ, ZUDODO, etc. drawn on the artwork) aren't currently detected. The bubble detector only finds proper speech bubbles. A proper SFX detector would need a trained text-detection model, which Kotoba doesn't ship.
 - **Abliterated Ollama models** (`huihui_ai/gemma-4-abliterated`, etc.) often have broken vision or template tags and return empty responses unpredictably. Use the regular `gemma3:27b` or `gemma4:26b` instead.
 - **Very stylized fonts in the original page** can confuse OCR. Re-OCR with a smaller crop often helps; the editor lets you fix any bubble manually.
-- **Vertical Japanese text** is supported by glm-ocr but quality varies. For tategaki-heavy pages you may need to edit individual bubbles.
+- **Vertical Japanese text** is supported by GLM-OCR but quality varies. For tategaki-heavy pages you may need to edit individual bubbles.
 
 ## Contributing
 
@@ -180,7 +182,9 @@ Kotoba stands on the shoulders of several excellent open-source projects:
 - [RT-DETRv2](https://github.com/lyuwenyu/RT-DETR) — bubble detection
 - [ogkalu2/comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) — finetuned RT-DETRv2 weights for comic panels
 - [anime-big-lama](https://huggingface.co/df1412/anime-big-lama) — manga-finetuned LaMa inpainting
-- [glm-ocr](https://ollama.com/) and [Gemma](https://ai.google.dev/gemma) for OCR/translation via Ollama
+- [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector-onnx) — pixel-level text segmentation for masks
+- [GLM-OCR](https://huggingface.co/zai-org/GLM-OCR) — OCR (via transformers)
+- [Gemma](https://ai.google.dev/gemma) and other vision LLMs — page analysis & translation (via Ollama)
 - [Ollama](https://ollama.com) — local model serving
 - [transformers](https://github.com/huggingface/transformers) and [PyTorch](https://pytorch.org) for inference
 
