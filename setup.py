@@ -11,7 +11,12 @@ If you run this file manually (bypassing run.bat), make sure you are inside a
 venv with the dependencies already installed.
 """
 
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from settings import settings
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -20,13 +25,21 @@ BLUE = "\033[94m"
 RESET = "\033[0m"
 DIM = "\033[2m"
 
-OLLAMA_URL = "http://localhost:11434"
+
+def info(msg):
+    print(f"{BLUE}[setup]{RESET} {msg}")
 
 
-def info(msg):  print(f"{BLUE}[setup]{RESET} {msg}")
-def ok(msg):    print(f"{GREEN}[ ok ]{RESET} {msg}")
-def warn(msg):  print(f"{YELLOW}[warn]{RESET} {msg}")
-def err(msg):   print(f"{RED}[err ]{RESET} {msg}")
+def ok(msg):
+    print(f"{GREEN}[ ok ]{RESET} {msg}")
+
+
+def warn(msg):
+    print(f"{YELLOW}[warn]{RESET} {msg}")
+
+
+def err(msg):
+    print(f"{RED}[err ]{RESET} {msg}")
 
 
 def check_python():
@@ -38,12 +51,15 @@ def check_python():
 
 def check_ollama():
     info("Checking Ollama...")
+    ollama_host = settings().ollama_url.removesuffix("/api/generate")
     try:
         import requests
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+
+        r = requests.get(f"{ollama_host}/api/tags", timeout=5)
+        r.raise_for_status()
         data = r.json()
     except Exception as e:
-        warn(f"Ollama is not reachable at {OLLAMA_URL} ({e})")
+        warn(f"Ollama is not reachable at {ollama_host} ({e})")
         warn("Install from https://ollama.com and start it before translating.")
         warn("You can still launch the web UI to explore the interface.")
         return
@@ -59,15 +75,29 @@ def check_ollama():
         print(f"   {DIM}ollama pull glm-ocr{RESET}")
         return
 
-    hints = ("vl", "vision", "llava", "gemma", "qwen", "minicpm",
-             "llama4", "pixtral", "molmo", "phi")
-    multimodal = [m["name"] for m in models
-                   if any(h in m["name"].lower() for h in hints)
-                   and "ocr" not in m["name"].lower()]
+    hints = (
+        "vl",
+        "vision",
+        "llava",
+        "gemma",
+        "qwen",
+        "minicpm",
+        "llama4",
+        "pixtral",
+        "molmo",
+        "phi",
+    )
+    multimodal = [
+        m["name"]
+        for m in models
+        if any(h in m["name"].lower() for h in hints) and "ocr" not in m["name"].lower()
+    ]
 
     if multimodal:
-        ok(f"Ollama OK — multimodal models: {', '.join(multimodal[:5])}"
-           + (f", +{len(multimodal)-5} more" if len(multimodal) > 5 else ""))
+        ok(
+            f"Ollama OK — multimodal models: {', '.join(multimodal[:5])}"
+            + (f", +{len(multimodal) - 5} more" if len(multimodal) > 5 else "")
+        )
     else:
         warn(f"Ollama has {len(models)} model(s) but none look multimodal.")
         warn("Translation needs a vision-capable model. Try:")
@@ -83,7 +113,7 @@ def launch_server():
     info("Starting web server...")
     print(f"{DIM}{'─' * 60}{RESET}")
     print(f"  Opening {GREEN}http://localhost:8000{RESET} in your browser...")
-    print(f"  Press Ctrl+C to stop")
+    print("  Press Ctrl+C to stop")
     print(f"{DIM}{'─' * 60}{RESET}")
 
     try:
@@ -94,12 +124,16 @@ def launch_server():
         sys.exit(1)
 
     import os
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
     os.chdir(script_dir)
 
-    import threading, socket, time, webbrowser
+    import socket
+    import threading
+    import time
+    import webbrowser
 
     def open_browser():
         url = "http://localhost:8000"

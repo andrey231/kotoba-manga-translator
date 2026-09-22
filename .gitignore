@@ -70,6 +70,7 @@ test_output/
 *.key
 huggingface_token.txt
 CLAUDE.md
+AGENTS.md
 
 # ── OS / build ───────────────────────────────────────────────────────────
 *.log

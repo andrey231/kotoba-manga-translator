@@ -70,8 +70,25 @@ Page image
   ├─► Original text removal    (anime-big-lama inpainting)
   └─► Translated text render   (PIL — auto font size, smart wrapping)
 ```
-__
 A **Fast mode** toggle skips the page-analysis and attribution stages — useful for quick drafts when context isn't critical (saves ~30-60 seconds per page).
+
+## Code structure
+
+The pipeline is coordinated by `manga_translator.py`. Model loading, OCR, page analysis,
+translation, rendering, image conversion, settings and persistence live in separate Python
+modules. `web.py` exposes the API; `web_ui.html` and `static/` contain the frontend.
+
+See [architecture and model data contracts](docs/ARCHITECTURE.md) for the module map,
+canonical bubble format, compatibility with saved jobs and verification commands.
+
+Run regression checks with `python tests/run.py`, or
+`python_embed\python.exe tests\run.py` in the portable Windows environment.
+
+Command-line translation:
+
+```sh
+python manga_translator.py input --output-dir results --llm-model YOUR_MODEL --target-lang Russian
+```
 
 ## Requirements
 
@@ -162,7 +179,7 @@ Same applies to scene context: a short summary of each page accumulates over the
 
 ## Known limitations
 
-- **Sound effects outside speech bubbles** (the big hand-drawn ガッ, ZUDODO, etc. drawn on the artwork) aren't currently detected. The bubble detector only finds proper speech bubbles. A proper SFX detector would need a trained text-detection model, which Kotoba doesn't ship.
+- **Sound effects outside speech bubbles** use the detector's `text_free` class and a separate confidence threshold. Highly stylized lettering can still be missed or recognized incorrectly.
 - **Abliterated Ollama models** (`huihui_ai/gemma-4-abliterated`, etc.) often have broken vision or template tags and return empty responses unpredictably. Use the regular `gemma3:27b` or `gemma4:26b` instead.
 - **Very stylized fonts in the original page** can confuse OCR. Re-OCR with a smaller crop often helps; the editor lets you fix any bubble manually.
 - **Vertical Japanese text** is supported by GLM-OCR but quality varies. For tategaki-heavy pages you may need to edit individual bubbles.
@@ -193,4 +210,3 @@ Kotoba stands on the shoulders of several excellent open-source projects:
 **Pepper&Carrot** — The first example is from the webcomic ***Pepper&Carrot*** by [**David Revoy**](https://www.peppercarrot.com/), used under the [Creative Commons Attribution 4.0 International License (CC-BY 4.0)](https://creativecommons.org/licenses/by/4.0/). The Chinese localization is by the Pepper&Carrot community. Pepper&Carrot is a free-libre webcomic — please support its author at https://www.peppercarrot.com/.
 
 **愛さずにはいられない** — The second and third examples are pages from *愛さずにはいられない* (I Can't Help But Love You) by よしまさこ, © よしまさこ / 集英社. These pages are from the [Manga109](http://www.manga109.org/) dataset (`Manga109s_released_2023_12_07`) and are used here for non-commercial research and demonstration purposes only, under the [Manga109 research license](http://www.manga109.org/en/agreement.html).
-
