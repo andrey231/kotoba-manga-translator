@@ -65,10 +65,7 @@ modules. `web.py` exposes the API; `ollama_models.py` checks model capabilities;
 `web_ui.html` and `static/` contain the frontend.
 
 See [architecture and model data contracts](docs/ARCHITECTURE.md) for the module map,
-canonical bubble format, compatibility with saved jobs and verification commands.
-
-Run regression checks with `python tests/run.py`, or
-`python_embed\python.exe tests\run.py` in the portable Windows environment.
+canonical bubble format and compatibility with saved jobs.
 
 Command-line translation:
 
