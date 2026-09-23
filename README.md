@@ -63,7 +63,7 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 Page image
   │
   ├─► Bubble detection         (RT-DETRv2)
-  ├─► OCR per bubble           (GLM-OCR via transformers)
+  ├─► OCR per bubble           (Hayai OCR v2.5 Nova via transformers)
   ├─► Page analysis            (vision LLM — characters + scene)
   ├─► Speaker attribution      (vision LLM — who said what)
   ├─► Batch translation        (text LLM — uses speaker, gender, scene)
@@ -97,7 +97,7 @@ python manga_translator.py input --output-dir results --llm-model YOUR_MODEL --t
   ```
   ollama pull gemma4:26b   # or any vision-capable model: llava, gemma3:27b, qwen2.5-vl, etc.
   ```
-  The OCR model (GLM-OCR) downloads automatically from HuggingFace on first run — no Ollama pull needed.
+  Hayai OCR and its SigLIP2 image processor download automatically from Hugging Face on first run — no Ollama OCR model is needed.
 - **~10 GB free disk space** for the portable Python environment and model weights
 - **GPU recommended** — works on CPU but each page takes much longer. NVIDIA cards use CUDA automatically.
 
@@ -154,13 +154,13 @@ User preferences (language, model, font, debug toggles) are stored in your brows
 
 The character archive is **`characters.json`** in the project root. You can edit or delete it freely. Deleting it starts a fresh archive.
 
-Model weights cache to `~/.cache/huggingface/hub/` (anime-big-lama, RT-DETRv2, GLM-OCR, comic-text-detector) — Ollama models live wherever you configured Ollama to store them.
+Model weights cache to `~/.cache/huggingface/hub/` (anime-big-lama, RT-DETRv2, Hayai OCR, comic-text-detector) — Ollama models live wherever you configured Ollama to store them.
 
 ## Privacy
 
 Kotoba never sends your images, text, or anything else off your machine. The only network requests are:
 
-- **First launch:** downloads of the portable Python, dependencies, and model weights (LaMa, RT-DETRv2, GLM-OCR, comic-text-detector) from python.org, PyPI, and HuggingFace.
+- **First launch:** downloads of the portable Python, dependencies, and model weights (LaMa, RT-DETRv2, Hayai OCR, comic-text-detector) from python.org, PyPI, and HuggingFace.
 - **Each translation:** local HTTP to `localhost:11434` (Ollama).
 
 You can air-gap the machine after the initial setup and it will still work.
@@ -182,7 +182,7 @@ Same applies to scene context: a short summary of each page accumulates over the
 - **Sound effects outside speech bubbles** use the detector's `text_free` class and a separate confidence threshold. Highly stylized lettering can still be missed or recognized incorrectly.
 - **Abliterated Ollama models** (`huihui_ai/gemma-4-abliterated`, etc.) often have broken vision or template tags and return empty responses unpredictably. Use the regular `gemma3:27b` or `gemma4:26b` instead.
 - **Very stylized fonts in the original page** can confuse OCR. Re-OCR with a smaller crop often helps; the editor lets you fix any bubble manually.
-- **Vertical Japanese text** is supported by GLM-OCR but quality varies. For tategaki-heavy pages you may need to edit individual bubbles.
+- **Vertical Japanese text** is supported by Hayai OCR, though illustrated or overlapping regions may still need manual correction.
 
 ## Contributing
 
@@ -200,7 +200,7 @@ Kotoba stands on the shoulders of several excellent open-source projects:
 - [ogkalu2/comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) — finetuned RT-DETRv2 weights for comic panels
 - [anime-big-lama](https://huggingface.co/df1412/anime-big-lama) — manga-finetuned LaMa inpainting
 - [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector-onnx) — pixel-level text segmentation for masks
-- [GLM-OCR](https://huggingface.co/zai-org/GLM-OCR) — OCR (via transformers)
+- [Hayai OCR v2.5 Nova](https://huggingface.co/JustANormalTinkerer/hayai-ocr-v2.5-nova) — OCR (via transformers, custom model code)
 - [Gemma](https://ai.google.dev/gemma) and other vision LLMs — page analysis & translation (via Ollama)
 - [Ollama](https://ollama.com) — local model serving
 - [transformers](https://github.com/huggingface/transformers) and [PyTorch](https://pytorch.org) for inference

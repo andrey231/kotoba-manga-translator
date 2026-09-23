@@ -59,6 +59,7 @@ desktop.ini
 crops/
 debug/
 test_output/
+/test_data/
 /results/
 /uploads/
 /jobs/

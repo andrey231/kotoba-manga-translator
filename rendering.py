@@ -943,18 +943,16 @@ def _draw_debug_overlay(pil: Image.Image, bubbles: list[dict]) -> None:
 def draw_results(
     img_cv: np.ndarray, bubbles: list[dict], debug: bool = False, page_name: str = ""
 ) -> np.ndarray:
-    logger.debug("  Segmenting text regions (CTD)...")
+    logger.debug("Segmenting text regions (CTD)")
     _compute_text_masks(img_cv, bubbles, page_name=page_name)
-
-    for b in bubbles:
-        if b.get("translation") and b.get("text_color") is None:
-            fill, outline, outline_w = detect_text_style(img_cv, b)
-            b["text_color"] = fill
-            if outline is not None and not b.get("outline_color"):
-                b["outline_color"] = outline
-                b["outline_width"] = outline_w
-
-    logger.debug("  Inpainting original text (LaMa)...")
+    for bubble in bubbles:
+        if bubble.get("translation") and bubble.get("text_color") is None:
+            fill, outline, outline_width = detect_text_style(img_cv, bubble)
+            bubble["text_color"] = fill
+            if outline is not None and not bubble.get("outline_color"):
+                bubble["outline_color"] = outline
+                bubble["outline_width"] = outline_width
+    logger.debug("Inpainting original text (LaMa)")
     inpainted = inpaint_page(img_cv, bubbles)
     pil = Image.fromarray(cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)).convert("RGBA")
 

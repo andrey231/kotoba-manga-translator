@@ -71,8 +71,6 @@ def check_ollama():
         print(f"   {DIM}ollama pull gemma3:27b{RESET}")
         print(f"   {DIM}ollama pull gemma4:26b{RESET}")
         print(f"   {DIM}ollama pull llava:13b{RESET}")
-        warn("Also recommended for OCR:")
-        print(f"   {DIM}ollama pull glm-ocr{RESET}")
         return
 
     hints = (
@@ -102,12 +100,6 @@ def check_ollama():
         warn(f"Ollama has {len(models)} model(s) but none look multimodal.")
         warn("Translation needs a vision-capable model. Try:")
         print(f"   {DIM}ollama pull gemma4:26b{RESET}")
-
-    has_ocr = any("ocr" in m["name"].lower() for m in models)
-    if not has_ocr:
-        warn("No OCR model detected (glm-ocr recommended). Pull with:")
-        print(f"   {DIM}ollama pull glm-ocr{RESET}")
-
 
 def launch_server():
     info("Starting web server...")

@@ -115,7 +115,6 @@ def translate_batch(
             gender_hints,
             errors,
             page_idx,
-            retries,
         )
 
     if missing_indices:
@@ -126,7 +125,7 @@ def translate_batch(
         for seq in missing_indices:
             bubble_idx, b = to_translate[seq]
             translation = _translate_persistent(
-                b, page_context, manga_ctx, target_lang, gender_hints
+                b, page_context, manga_ctx, target_lang, gender_hints, retries=retries
             )
             if translation:
                 b["translation"] = translation
@@ -230,24 +229,17 @@ def _build_translation_prompt(
     return "\n\n".join(parts)
 
 
-def _call_translation_llm(prompt: str, system: str, n: int, chunk_idx: int, retries: int) -> str:
-    for attempt in range(retries):
-        try:
-            return ollama(
-                settings().llm_model,
-                prompt,
-                timeout=600,
-                num_predict=TRANSLATE_MAX_TOKENS,
-                temperature=0.0,
-                system=system,
-                fmt=_translation_schema(n),
-                num_ctx=TRANSLATE_NUM_CTX,
-            )
-        except requests.exceptions.ReadTimeout:
-            logger.warning(
-                f"     [timeout] chunk {chunk_idx + 1}, retry {attempt + 1}/{retries}..."
-            )
-    return ""
+def _call_translation_llm(prompt: str, system: str, n: int) -> str:
+    return ollama(
+        settings().llm_model,
+        prompt,
+        timeout=120,
+        num_predict=TRANSLATE_MAX_TOKENS,
+        temperature=0.0,
+        system=system,
+        fmt=_translation_schema(n),
+        num_ctx=TRANSLATE_NUM_CTX,
+    )
 
 
 def _looks_like_commentary(t: str, src: str) -> bool:
@@ -293,20 +285,19 @@ def _translate_chunk(
     gender_hints: dict,
     errors,
     page_idx: int,
-    retries: int,
 ) -> None:
     entries = _build_chunk_entries(chunk, gender_hints)
     prompt = _build_translation_prompt(entries, page_context, manga_ctx)
     system = _translation_system(target_lang)
-    raw = _call_translation_llm(prompt, system, len(entries), chunk_idx, retries)
+    raw = _call_translation_llm(prompt, system, len(entries))
 
     if not raw:
         missing_indices.extend(range(offset, offset + len(chunk)))
         if errors:
             errors.add(
                 page_idx,
-                "timeout",
-                f"Chunk {chunk_idx + 1} translation failed — all timeouts",
+                "empty_response",
+                f"Chunk {chunk_idx + 1} returned no translation",
                 bubbles_affected=len(chunk),
             )
         return
@@ -346,7 +337,12 @@ def _translate_chunk(
 
 
 def _translate_persistent(
-    bubble: dict, page_context: str, manga_ctx: MangaContext, target_lang: str, gender_hints: dict
+    bubble: dict,
+    page_context: str,
+    manga_ctx: MangaContext,
+    target_lang: str,
+    gender_hints: dict,
+    retries: int = 3,
 ) -> str:
     text = bubble.get("text", "").strip()
     if not text:
@@ -403,7 +399,7 @@ def _translate_persistent(
         "к сожалению",
     ) + _META_MARKERS
 
-    for attempt, (strat_label, build_prompt) in enumerate(strategies, start=1):
+    for attempt, (strat_label, build_prompt) in enumerate(strategies[:retries], start=1):
         prompt = "\n".join(part for part in (glossary_prompt, build_prompt()) if part)
         if len(prompt.encode("utf-8")) > TRANSLATE_INPUT_BYTES:
             logger.warning("Translation retry exceeds the input budget")
@@ -417,7 +413,9 @@ def _translate_persistent(
                 num_ctx=TRANSLATE_NUM_CTX,
                 temperature=0.3,
             )
-        except Exception as e:
+        except requests.RequestException:
+            raise
+        except ValueError as e:
             logger.warning(f"     [persistent {attempt} {strat_label}] error: {e}")
             continue
 
@@ -438,7 +436,7 @@ def _translate_persistent(
         logger.debug(f"     [persistent ok @ attempt {attempt} / {strat_label}]")
         return cleaned
 
-    logger.warning(f"     [persistent fail] '{text[:40]}' — all 3 strategies failed")
+    logger.warning(f"     [persistent fail] '{text[:40]}' — all strategies failed")
     return ""
 
 

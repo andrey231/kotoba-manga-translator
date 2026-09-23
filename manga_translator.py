@@ -2,6 +2,8 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -12,7 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from context import CharacterArchive, ErrorLog, MangaContext
 from fonts import resolve_font
 from image_io import SUPPORTED_EXTENSIONS, read_image, write_image
-from models import detect_bubbles
+from llm import model_phase, unload_model
+from models import detect_bubbles, release_gpu_memory
 from ocr import ocr_region
 from page_analysis import (
     analyze_page_full,
@@ -72,8 +75,6 @@ def _handle_intro_page(
     archive: CharacterArchive,
     manga_ctx: MangaContext,
     page_idx: int,
-    output_path: str,
-    img_cv: np.ndarray,
 ) -> bool:
     logger.debug("\n── Checking: character gallery? ──")
     if not detect_character_intro_page(image_path):
@@ -87,9 +88,6 @@ def _handle_intro_page(
         return False
 
     manga_ctx.update("Character introduction page.", page_idx)
-    write_image(output_path, img_cv)
-    logger.debug(f"\nSaved (unchanged): {output_path}")
-    logger.debug("  ⓘ character introduction page — no translation needed")
     return True
 
 
@@ -166,16 +164,101 @@ def _analyze_and_attribute(
     return characters_context, page_context, page_summary
 
 
-def _print_page_stats(text_bubbles: list[dict], output_path: str) -> None:
-    empty_ocr = sum(1 for b in text_bubbles if not b.get("text"))
-    no_translation = sum(1 for b in text_bubbles if b.get("text") and not b.get("translation"))
-    err_translation = sum(1 for b in text_bubbles if b.get("translation") == "[error]")
-    ok = len(text_bubbles) - empty_ocr - no_translation - err_translation
-    logger.debug(f"\nSaved: {output_path}")
-    logger.warning(
-        f"  ✓ translated: {ok} | ⚠ no translation: {no_translation} | "
-        f"✗ OCR empty: {empty_ocr} | ✗ translation error: {err_translation}"
+def _stage_callback(page_idx, on_stage):
+    def stage(key):
+        if on_stage:
+            try:
+                on_stage(page_idx, key)
+            except Exception as error:
+                logger.warning("Stage callback failed: %s", error)
+
+    return stage
+
+
+@dataclass
+class _PageState:
+    filename: str
+    bubbles: list[dict] = field(default_factory=list)
+    elapsed: float = 0.0
+    failed: bool = False
+    intro: bool = False
+
+
+def _prepare_page(image_path, page_idx, errors, on_stage):
+    stage = _stage_callback(page_idx, on_stage)
+    stage("stage_detect")
+    image = read_image(image_path)
+    image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    bubbles = _detect_text_bubbles(image, image_pil)
+    if not bubbles and errors:
+        errors.add(page_idx, "no_bubbles", "No text bubbles found on this page", image=image_path)
+    stage("stage_ocr")
+    _ocr_bubbles(image, bubbles, page_idx, errors)
+    stage("stage_prepared")
+    return bubbles
+
+
+def _translate_page(
+    image_path,
+    page_idx,
+    bubbles,
+    manga_ctx,
+    archive,
+    target_lang,
+    fast_mode,
+    errors,
+    on_stage,
+):
+    stage = _stage_callback(page_idx, on_stage)
+    if not fast_mode and len(bubbles) <= 2:
+        stage("stage_analyze")
+        if _handle_intro_page(image_path, archive, manga_ctx, page_idx):
+            stage("stage_translated")
+            return True
+    _, page_context, page_summary = _analyze_and_attribute(
+        image_path,
+        bubbles,
+        archive,
+        manga_ctx,
+        page_idx,
+        fast_mode,
+        errors,
+        stage,
     )
+    stage("stage_translate")
+    translate_batch(
+        bubbles,
+        page_context,
+        manga_ctx,
+        target_lang,
+        retries=settings().translate_retries,
+        errors=errors,
+        page_idx=page_idx,
+    )
+    manga_ctx.update(page_summary, page_idx)
+    stage("stage_translated")
+    return False
+
+
+def _render_page(image_path, page_idx, bubbles, output_path, debug, unchanged, on_stage):
+    stage = _stage_callback(page_idx, on_stage)
+    stage("stage_inpaint")
+    image = read_image(image_path)
+    try:
+        annotated = (
+            image
+            if unchanged
+            else draw_results(
+                image,
+                bubbles,
+                debug=debug,
+                page_name=Path(output_path).stem,
+            )
+        )
+        write_image(output_path, annotated)
+    finally:
+        for bubble in bubbles:
+            bubble.pop("_text_mask", None)
 
 
 def process_page(
@@ -190,73 +273,25 @@ def process_page(
     errors: ErrorLog | None = None,
     on_stage=None,
 ):
-    def stage(key):
-        if on_stage:
-            try:
-                on_stage(page_idx, key)
-            except Exception:
-                pass
-
-    logger.debug(f"\n{'=' * 60}")
-    logger.debug(f"Page {page_idx}: {image_path}")
-    if fast_mode:
-        logger.debug("[fast mode] skipping page analysis and speaker attribution")
-    logger.debug(f"{'=' * 60}")
-
-    stage("stage_detect")
-    img_cv = read_image(image_path)
-    image_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
-    text_bubbles = _detect_text_bubbles(img_cv, image_pil)
-    logger.debug(f"Bubbles: {len(text_bubbles)}")
-
-    if not text_bubbles and errors:
-        errors.add(page_idx, "no_bubbles", "No text bubbles found on this page", image=image_path)
-
-    if not fast_mode and len(text_bubbles) <= 2:
-        if _handle_intro_page(image_path, archive, manga_ctx, page_idx, output_path, img_cv):
-            return text_bubbles
-
-    stage("stage_ocr")
-    _ocr_bubbles(img_cv, text_bubbles, page_idx, errors)
-
-    _, page_context, page_summary = _analyze_and_attribute(
-        image_path,
-        text_bubbles,
-        archive,
-        manga_ctx,
-        page_idx,
-        fast_mode,
-        errors,
-        stage,
-    )
-
-    logger.debug("\n── Translation ──")
-    stage("stage_translate")
-    translate_batch(
-        text_bubbles,
-        page_context,
-        manga_ctx,
-        target_lang,
-        retries=settings().translate_retries,
-        errors=errors,
-        page_idx=page_idx,
-    )
-    for i, b in enumerate(text_bubbles):
-        logger.debug(f"  [{i + 1}] {b.get('text', '')[:25]} → {b.get('translation', '')[:40]}")
-
-    manga_ctx.update(page_summary, page_idx)
-
-    stage("stage_inpaint")
-    annotated = draw_results(
-        img_cv,
-        text_bubbles,
-        debug=debug,
-        page_name=os.path.splitext(os.path.basename(output_path))[0],
-    )
-    write_image(output_path, annotated)
-
-    _print_page_stats(text_bubbles, output_path)
-    return text_bubbles
+    unload_model(settings().llm_model)
+    try:
+        bubbles = _prepare_page(image_path, page_idx, errors, on_stage)
+        with model_phase():
+            intro = _translate_page(
+                image_path,
+                page_idx,
+                bubbles,
+                manga_ctx,
+                archive,
+                target_lang,
+                fast_mode,
+                errors,
+                on_stage,
+            )
+        _render_page(image_path, page_idx, bubbles, output_path, debug, intro, on_stage)
+        return bubbles
+    finally:
+        release_gpu_memory()
 
 
 def format_duration(seconds: float) -> str:
@@ -350,18 +385,18 @@ def _process_directory(
             "Will use PIL default (text may render poorly)."
         )
 
-    files = sorted(
+    pages = sorted(
         [
-            f
+            _PageState(filename=f)
             for f in os.listdir(input_dir)
             if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS
         ],
-        key=natural_key,
+        key=lambda page: natural_key(page.filename),
     )
-    if not files:
+    if not pages:
         raise ValueError(f"No images found in {input_dir}")
 
-    logger.debug(f"Pages found: {len(files)}")
+    logger.debug(f"Pages found: {len(pages)}")
     os.makedirs(output_dir, exist_ok=True)
 
     manga_ctx = MangaContext()
@@ -369,70 +404,111 @@ def _process_directory(
     errors = ErrorLog(error_log_path)
 
     if on_start:
-        on_start(len(files))
+        on_start(len(pages))
 
     total_start = time.perf_counter()
     page_times: list[float] = []
     failed = 0
 
-    for page_idx, filename in enumerate(files, start=1):
-        if cancel_event and cancel_event.is_set():
-            logger.debug("[abort] Translation cancelled by user.")
-            break
-        input_path = os.path.join(input_dir, filename)
-        name = os.path.splitext(filename)[0]
-        output_path = os.path.join(output_dir, f"{name}_translated.png")
+    def cancelled():
+        return cancel_event is not None and cancel_event.is_set()
 
-        page_start = time.perf_counter()
-        bubbles_result = []
-        try:
-            with use_settings(updated_settings(font_path=resolved)):
-                bubbles_result = (
-                    process_page(
-                        input_path,
-                        page_idx,
-                        manga_ctx,
-                        archive,
-                        output_path,
-                        target_lang,
-                        debug=debug,
-                        fast_mode=fast_mode,
-                        errors=errors,
-                        on_stage=on_stage,
-                    )
-                    or []
-                )
-            elapsed = time.perf_counter() - page_start
-            page_times.append(elapsed)
-            logger.debug(f"  ⏱  page processed in {format_duration(elapsed)}")
-        except Exception as e:
+    def page_failed(page_idx, page, error):
+        nonlocal failed
+        if not page.failed:
             failed += 1
-            elapsed = time.perf_counter() - page_start
-            logger.warning(f"\n[ERROR] {filename}: {e}")
-            import traceback
+        page.failed = True
+        logger.warning("Page %s failed: %s", page.filename, error)
+        errors.add(
+            page_idx, "page_failed", f"{type(error).__name__}: {error}", filename=page.filename
+        )
 
-            traceback.print_exc()
-            errors.add(
-                page_idx,
-                "page_failed",
-                f"Page not processed: {type(e).__name__}: {e}",
-                filename=filename,
-                traceback=traceback.format_exc(),
-            )
+    try:
+        if not cancelled():
+            unload_model(settings().llm_model)
+        with use_settings(updated_settings(font_path=resolved)):
+            for page_idx, page in enumerate(pages, start=1):
+                if cancelled():
+                    break
+                page_start = time.perf_counter()
+                try:
+                    page.bubbles = _prepare_page(
+                        os.path.join(input_dir, page.filename),
+                        page_idx,
+                        errors,
+                        on_stage,
+                    )
+                except Exception as error:
+                    page_failed(page_idx, page, error)
+                page.elapsed += time.perf_counter() - page_start
 
-        if on_page_done:
-            try:
-                on_page_done(page_idx, len(files), filename, output_path, bubbles_result, elapsed)
-            except Exception as cb_err:
-                logger.debug(f"  [callback warn] on_page_done: {cb_err}")
+            if not cancelled() and any(not page.failed for page in pages):
+                with model_phase():
+                    for page_idx, page in enumerate(pages, start=1):
+                        if cancelled():
+                            break
+                        if page.failed:
+                            continue
+                        page_start = time.perf_counter()
+                        try:
+                            page.intro = _translate_page(
+                                os.path.join(input_dir, page.filename),
+                                page_idx,
+                                page.bubbles,
+                                manga_ctx,
+                                archive,
+                                target_lang,
+                                fast_mode,
+                                errors,
+                                on_stage,
+                            )
+                        except Exception as error:
+                            page_failed(page_idx, page, error)
+                        page.elapsed += time.perf_counter() - page_start
+
+            for page_idx, page in enumerate(pages, start=1):
+                if cancelled():
+                    break
+                page_start = time.perf_counter()
+                output_path = os.path.join(
+                    output_dir, f"{os.path.splitext(page.filename)[0]}_translated.png"
+                )
+                try:
+                    _render_page(
+                        os.path.join(input_dir, page.filename),
+                        page_idx,
+                        page.bubbles,
+                        output_path,
+                        debug,
+                        page.failed or page.intro,
+                        on_stage,
+                    )
+                except Exception as error:
+                    page_failed(page_idx, page, error)
+                page.elapsed += time.perf_counter() - page_start
+                if not page.failed:
+                    page_times.append(page.elapsed)
+                if on_page_done:
+                    try:
+                        on_page_done(
+                            page_idx,
+                            len(pages),
+                            page.filename,
+                            output_path,
+                            page.bubbles if not page.failed else [],
+                            page.elapsed,
+                        )
+                    except Exception as error:
+                        logger.warning("Page callback failed: %s", error)
+    finally:
+        release_gpu_memory()
+        errors.save()
 
     total_elapsed = time.perf_counter() - total_start
 
-    errors.save()
-
     logger.debug(f"\n{'=' * 60}")
     logger.debug("Done!")
-    logger.debug(f"  Pages processed:    {len(page_times)} / {len(files)}")
+    logger.debug(f"  Pages processed:    {len(page_times)} / {len(pages)}")
     if failed:
         logger.warning(f"  Errors:             {failed}")
     logger.debug(f"  Total time:         {format_duration(total_elapsed)}")
@@ -453,7 +529,7 @@ def _process_directory(
         logger.debug("  ✓ No issues recorded")
 
     stats = {
-        "total_pages": len(files),
+        "total_pages": len(pages),
         "processed": len(page_times),
         "failed": failed,
         "total_seconds": total_elapsed,

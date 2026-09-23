@@ -28,9 +28,9 @@ const I18N = {
     sett_chunk_size:        "Bubbles per LLM request",
     sett_chunk_size_desc:   "How many speech bubbles are sent to the LLM in one batch. Larger batches provide more context but make JSON parsing less reliable. Default: 5.",
     sett_retries:           "LLM retries on failure",
-    sett_retries_desc:      "Number of times to retry a failed LLM call (bad JSON, empty response, timeout). Higher values make translation more robust at the cost of extra time. Default: 3.",
+    sett_retries_desc:      "Number of alternative prompts for missing or invalid translations (up to 3). Network errors and timeouts stop processing without automatic retries. Default: 3.",
     sett_ollama_url:        "Ollama API URL",
-    sett_ollama_url_desc:   "Full URL to the Ollama generate endpoint. Change if Ollama runs on a different host or port. Default: http://localhost:11434/api/generate.",
+    sett_ollama_url_desc:   "Full URL to the Ollama generate endpoint. Change if Ollama runs on a different host or port. Default: http://127.0.0.1:11434/api/generate.",
     sett_reset:             "Reset to defaults",
     upload_drop:      "Drop chapter pages here",
     upload_or_click:  "or click to choose files (jpg, png, webp, zip, cbz)",
@@ -86,6 +86,8 @@ const I18N = {
     // Stages shown over processing pages
     stage_detect:     "Detecting bubbles",
     stage_ocr:        "Reading text (OCR)",
+    stage_prepared:   "Text recognized; waiting for translation",
+    stage_translated: "Translated; waiting for inpainting",
     stage_analyze:    "Analyzing scene",
     stage_attribute:  "Identifying speakers",
     stage_translate:  "Translating",
@@ -162,9 +164,9 @@ const I18N = {
     sett_chunk_size:        "Баблов за один LLM-запрос",
     sett_chunk_size_desc:   "Сколько баблов отправляется LLM в одном батче. Больше → больше контекста, но JSON менее надёжен. Умолчание: 5.",
     sett_retries:           "Повторных попыток LLM",
-    sett_retries_desc:      "Число попыток повторить вызов при ошибке LLM (плохой JSON, пустой ответ, таймаут). Больше → стабильнее, но медленнее. Умолчание: 3.",
+    sett_retries_desc:      "Число альтернативных запросов для пропущенных или неверных переводов (до 3). Сетевые ошибки и таймауты останавливают обработку без автоматических повторов. Умолчание: 3.",
     sett_ollama_url:        "URL Ollama API",
-    sett_ollama_url_desc:   "Полный URL эндпоинта генерации Ollama. Измените, если Ollama запущена на другом хосте или порту. Умолчание: http://localhost:11434/api/generate.",
+    sett_ollama_url_desc:   "Полный URL эндпоинта генерации Ollama. Измените, если Ollama запущена на другом хосте или порту. Умолчание: http://127.0.0.1:11434/api/generate.",
     sett_reset:             "Сбросить настройки по умолчанию",
     upload_drop:      "Перетащите страницы главы сюда",
     upload_or_click:  "или нажмите чтобы выбрать файлы (jpg, png, webp, zip, cbz)",
@@ -219,6 +221,8 @@ const I18N = {
     loading:          "Загрузка...",
     stage_detect:     "Поиск баблов",
     stage_ocr:        "Распознавание текста (OCR)",
+    stage_prepared:   "Текст распознан; ожидание перевода",
+    stage_translated: "Переведено; ожидание инпейтинга",
     stage_analyze:    "Анализ сцены",
     stage_attribute:  "Определение говорящих",
     stage_translate:  "Перевод",
@@ -548,16 +552,26 @@ function handleEvent(evt, total) {
   if (evt.type === 'start') {
     log(t("starting_n", evt.total), 'ok');
   } else if (evt.type === 'stage') {
-    // Optional stage update sent from backend, see web.py
     setCardStage(evt.page, evt.stage_key);
+    const stages = {
+      stage_detect: [0, 0], stage_ocr: [0, 0.5], stage_prepared: [0, 1],
+      stage_analyze: [1, 0], stage_attribute: [1, 0.3], stage_translate: [1, 0.5],
+      stage_translated: [1, 1], stage_inpaint: [2, 0],
+    };
+    const stage = stages[evt.stage_key];
+    if (stage) {
+      const completed = stage[0] * total + evt.page - 1 + stage[1];
+      $('progress-fill').style.width = `${Math.round(completed / (3 * total) * 100)}%`;
+      $('progress-text').textContent = `${t(evt.stage_key)} · ${t("page_of", evt.page, total)}`;
+      $('progress-time').textContent = `${t("elapsed_label")} ${fmtTime((Date.now() - startTime) / 1000)}`;
+    }
   } else if (evt.type === 'page_done') {
-    const pct = Math.round(evt.page / total * 100);
+    const pct = Math.round((2 * total + evt.page) / (3 * total) * 100);
     $('progress-fill').style.width = pct + '%';
     $('progress-text').textContent = t("page_of", evt.page, total);
     const elapsed = (Date.now() - startTime) / 1000;
-    const remaining = (elapsed / evt.page) * (total - evt.page);
     $('progress-time').textContent =
-      `${t("elapsed_label")} ${fmtTime(elapsed)}  •  ${t("remaining_label")} ${fmtTime(remaining)}`;
+      `${t("elapsed_label")} ${fmtTime(elapsed)}`;
     log(t("page_done_log", evt.page, evt.bubbles.length, evt.elapsed.toFixed(1)), 'ok');
 
     // Cache page data locally so editor can open it without a server round-trip
@@ -572,8 +586,6 @@ function handleEvent(evt, total) {
     currentJobPages.sort((a, b) => a.page - b.page);
 
     replaceCardWithResult(evt);
-    // Activate next card as "detecting"
-    if (processingCards[evt.page + 1]) setCardStage(evt.page + 1, "stage_detect");
 
     // Обновляем список страниц в редакторе; при первой странице — открываем её
     populatePageSelect();
@@ -1406,7 +1418,7 @@ const SETTINGS_DEFAULTS = {
   inpaint_shrink:    1,
   chunk_size:        5,
   translate_retries: 3,
-  ollama_url:        'http://localhost:11434/api/generate',
+  ollama_url:        'http://127.0.0.1:11434/api/generate',
 };
 
 function loadSettings() {

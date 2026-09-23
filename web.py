@@ -20,6 +20,7 @@ from bubbles import normalize_bubble, public_bubble, update_bubble
 from context import MangaContext
 from fonts import system_font_dirs
 from image_io import SUPPORTED_EXTENSIONS, clip_box, read_image, to_pil, write_image
+from llm import model_phase
 from models import detect_bubbles
 from ocr import ocr_region
 from rendering import draw_results
@@ -201,7 +202,7 @@ KNOWN_MULTIMODAL = (
 )
 MULTIMODAL_FAMILIES = {"clip", "mllama", "llava", "gemma3", "gemma4"}
 OCR_FAMILIES = {"glmocr"}
-OCR_NAME_HINTS = ("glm-ocr", "tesseract", "paddleocr", "easyocr")
+OCR_NAME_HINTS = ("glm-ocr", "hayai", "tesseract", "paddleocr", "easyocr")
 NEVER_MULTIMODAL = ("gemma:", "gemma2:", "gemma2-", "phi3:", "phi3-mini", "phi:")
 
 
@@ -678,13 +679,14 @@ async def detect_region(job_id: str, page_idx: int, payload: dict):
 
         dummy_ctx = MangaContext()
         if text_bubbles:
-            translate_batch(
-                text_bubbles,
-                "",
-                dummy_ctx,
-                target_lang,
-                retries=translate_retries,
-            )
+            with model_phase():
+                translate_batch(
+                    text_bubbles,
+                    "",
+                    dummy_ctx,
+                    target_lang,
+                    retries=translate_retries,
+                )
 
         out_path = result_dir / f"{Path(page['filename']).stem}_translated.png"
         page["bubbles"].extend(raw)

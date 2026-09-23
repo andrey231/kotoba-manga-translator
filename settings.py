@@ -21,7 +21,7 @@ class Settings:
     llm_model: str = ""
     ollama_url: str = field(
         default_factory=lambda: ollama_endpoint(
-            os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+            os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
         )
     )
     font_path: str | None = "arial.ttf"

@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from functools import wraps
 from threading import RLock
 
@@ -89,6 +90,8 @@ def get_inpaint_model():
     if not _inpaint_loaded:
         _inpaint_model = load_inpainting_model()
         _inpaint_loaded = True
+    if _inpaint_model is not None:
+        _inpaint_model.to(DEVICE)
     return _inpaint_model
 
 
@@ -97,10 +100,14 @@ def get_detector():
     global _detector_processor, _detector_model
     if _detector_model is None:
         _detector_processor, _detector_model = load_detector()
+    _detector_model.to(DEVICE)
     return _detector_processor, _detector_model
 
 
-OCR_HF_ID = "zai-org/GLM-OCR"
+OCR_HF_ID = "JustANormalTinkerer/hayai-ocr-v2.5-nova"
+
+
+OCR_VISION_ID = "google/siglip2-base-patch16-naflex"
 
 
 _ocr_processor = None
@@ -109,34 +116,45 @@ _ocr_processor = None
 _ocr_model = None
 
 
-_ocr_loaded = False
+_ocr_tokenizer = None
 
 
 @_locked
 def get_ocr_model():
-    global _ocr_processor, _ocr_model, _ocr_loaded
-    if not _ocr_loaded:
-        _ocr_loaded = True
-        try:
-            from transformers import AutoModelForImageTextToText, AutoProcessor
+    global _ocr_processor, _ocr_model, _ocr_tokenizer
+    if _ocr_model is None:
+        from transformers import AutoModel, PreTrainedTokenizerFast
 
-            logger.debug(f"[ocr] Loading {OCR_HF_ID} (transformers)...")
-            _ocr_processor = AutoProcessor.from_pretrained(OCR_HF_ID)
-            _ocr_model = (
-                AutoModelForImageTextToText.from_pretrained(
-                    OCR_HF_ID,
-                    dtype="auto",
-                )
-                .to(DEVICE)
-                .eval()
-            )
-            logger.debug(f"[ocr] Loaded ({DEVICE})")
-        except Exception as e:
-            logger.warning(
-                f"[ocr] ⚠ transformers OCR unavailable ({e}); falling back to Ollama glm-ocr"
-            )
-            _ocr_processor = _ocr_model = None
-    return _ocr_processor, _ocr_model
+        logger.debug("[ocr] Loading %s", OCR_HF_ID)
+        processor = AutoImageProcessor.from_pretrained(OCR_VISION_ID)
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(OCR_HF_ID)
+        model = AutoModel.from_pretrained(OCR_HF_ID, trust_remote_code=True).to(DEVICE).eval()
+        _ocr_processor, _ocr_model, _ocr_tokenizer = processor, model, tokenizer
+        logger.debug("[ocr] Loaded on %s", DEVICE)
+    _ocr_model.to(DEVICE)
+    return _ocr_processor, _ocr_model, _ocr_tokenizer
+
+
+@_locked
+def release_gpu_memory():
+    global _ctd_session
+    if DEVICE != "cuda":
+        return
+    if _ocr_model is not None:
+        decoder = getattr(_ocr_model, "decoder", None)
+        mask_cache = getattr(decoder, "_mask_cache", None)
+        if isinstance(mask_cache, dict):
+            mask_cache.clear()
+        module = sys.modules.get(type(_ocr_model).__module__)
+        for name in ("_get_2d_visual_freqs", "_get_1d_text_freqs"):
+            cached = getattr(module, name, None)
+            if cached is not None and hasattr(cached, "cache_clear"):
+                cached.cache_clear()
+    for model in (_detector_model, _ocr_model, _inpaint_model):
+        if model is not None:
+            model.to("cpu")
+    _ctd_session = None
+    torch.cuda.empty_cache()
 
 
 _ctd_session = None

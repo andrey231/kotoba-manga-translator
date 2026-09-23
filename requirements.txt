@@ -8,7 +8,7 @@ opencv-python>=4.10
 numpy>=1.26
 
 # Глубокое обучение
-transformers>=5.0           # RT-DETRv2 (детекция баблов) + GLM-OCR (glm_ocr, OCR)
+transformers>=5.0           # RT-DETRv2 (детекция баблов) + Hayai OCR (custom model)
 huggingface_hub>=0.24       # скачивание anime-big-lama
 # Сегментация текста — Comic Text Detector (ONNX, специализирован для манги)
 # Веса (~30 MB) скачиваются с HuggingFace при первом запуске автоматически.

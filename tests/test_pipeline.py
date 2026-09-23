@@ -149,22 +149,47 @@ class ModelContractTests(unittest.TestCase):
     def test_ocr_works_without_creating_crop_files(self):
         with (
             use_settings(Settings()),
-            patch.object(ocr, "_ocr_call", return_value="Hello") as infer,
+            patch.object(ocr, "_ocr_infer", return_value="Hello") as infer,
         ):
             text = ocr.ocr_region(np.zeros((20, 20, 3), dtype=np.uint8), 0, 0, 20, 20, 1, 1)
         self.assertEqual(text, "Hello")
         self.assertIsInstance(infer.call_args.args[0], Image.Image)
 
-    def test_ocr_error_does_not_return_partial_text(self):
-        response = Mock()
-        response.iter_lines.return_value = [
-            b'{"response":"partial\\n"}',
-            b'{"error":"model crashed"}',
-        ]
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-        with patch.object(ocr.requests, "post", return_value=response):
-            self.assertEqual(ocr._ocr_stream(Image.new("RGB", (4, 4))), "")
+    def test_hayai_receives_rgb_crop_with_patch_budget_and_tokenizer(self):
+        class Inputs(dict):
+            def to(self, device):
+                self.device = device
+                return self
+
+        inputs = Inputs(
+            pixel_values=torch.zeros((1, 4, 3, 16, 16)),
+            pixel_attention_mask=torch.ones((1, 4)),
+            spatial_shapes=torch.tensor([[2, 2]]),
+        )
+        processor = Mock(return_value=inputs)
+        model = Mock(device="cpu")
+        model.generate.return_value = ["これはすごい"]
+        tokenizer = Mock()
+        crop = Image.new("L", (37, 55))
+        with patch.object(ocr, "get_ocr_model", return_value=(processor, model, tokenizer)):
+            self.assertEqual(ocr._ocr_infer(crop), "これはすごい")
+        self.assertEqual(processor.call_args.kwargs["max_num_patches"], 512)
+        self.assertEqual(processor.call_args.kwargs["images"][0].mode, "RGB")
+        self.assertIs(model.generate.call_args.kwargs["tokenizer"], tokenizer)
+        self.assertEqual(model.generate.call_args.kwargs["repetition_penalty"], 1.0)
+
+    def test_hayai_uses_original_pixels_and_retries_only_empty_output(self):
+        image = np.full((20, 30, 3), 255, dtype=np.uint8)
+        image[2:8, 3:9] = (10, 20, 30)
+        with patch.object(ocr, "_ocr_infer", return_value="会長") as infer:
+            self.assertEqual(ocr.ocr_region(image, 3, 2, 6, 6, 1, 1), "会長")
+        self.assertEqual(infer.call_count, 1)
+        self.assertEqual(infer.call_args.args[0].size, (6, 6))
+        self.assertEqual(infer.call_args.args[0].getpixel((0, 0)), (30, 20, 10))
+        with patch.object(ocr, "_ocr_infer", side_effect=["", "再試行"]) as infer:
+            self.assertEqual(ocr.ocr_region(image, 3, 2, 6, 6, 1, 1), "再試行")
+        self.assertEqual(infer.call_count, 2)
+        self.assertGreater(infer.call_args.args[0].width, 6)
 
 
 class TranslationTests(unittest.TestCase):
@@ -211,6 +236,80 @@ class TranslationTests(unittest.TestCase):
         with patch.object(llm.requests, "post", return_value=response):
             with self.assertRaises(requests.HTTPError):
                 llm.ollama("missing", "Translate")
+
+    def test_ollama_disables_thinking_and_releases_gpu_before_request(self):
+        response = Mock()
+        response.json.return_value = {"response": "Translated", "done_reason": "stop"}
+        events = []
+        with (
+            patch.object(llm, "release_gpu_memory", side_effect=lambda: events.append("release")),
+            patch.object(
+                llm.requests, "post", side_effect=lambda *a, **kw: (events.append(kw), response)[1]
+            ),
+        ):
+            self.assertEqual(llm.ollama("qwen", "Translate"), "Translated")
+        self.assertEqual(events[0], "release")
+        self.assertIs(events[1]["json"]["think"], False)
+        self.assertEqual(events[1]["json"]["options"]["num_ctx"], 8192)
+        response.close.assert_called_once()
+
+    def test_empty_or_truncated_response_does_not_trigger_hidden_requests(self):
+        for body in (
+            {"response": "", "thinking": "hidden JSON", "done_reason": "stop"},
+            {"response": "partial", "done_reason": "length"},
+        ):
+            response = Mock()
+            response.json.return_value = body
+            with (
+                patch.object(llm, "release_gpu_memory"),
+                patch.object(llm.requests, "post", return_value=response) as post,
+                self.assertRaises(ValueError),
+            ):
+                llm.ollama("qwen", "Translate")
+            post.assert_called_once()
+            response.close.assert_called_once()
+
+    def test_translation_timeout_does_not_trigger_batch_or_bubble_retries(self):
+        with (
+            patch.object(
+                translation, "ollama", side_effect=requests.ReadTimeout("timeout")
+            ) as call,
+            self.assertRaises(requests.ReadTimeout),
+        ):
+            translation.translate_batch([{"text": "Hello"}], "", translation.MangaContext())
+        call.assert_called_once()
+
+    def test_persistent_translation_stops_on_connection_error(self):
+        with (
+            patch.object(
+                translation, "ollama", side_effect=requests.ConnectionError("offline")
+            ) as call,
+            self.assertRaises(requests.ConnectionError),
+        ):
+            translation._translate_persistent(
+                {"text": "Hello"}, "", translation.MangaContext(), "Russian", {}
+            )
+        call.assert_called_once()
+
+    def test_gpu_models_are_offloaded_and_detector_returns_to_its_device(self):
+        detector, ocr_model, inpaint = Mock(), Mock(), Mock()
+        ocr_model.decoder._mask_cache = {"cuda": torch.ones(1)}
+        with (
+            patch.object(models, "DEVICE", "cuda"),
+            patch.object(models, "_detector_model", detector),
+            patch.object(models, "_ocr_model", ocr_model),
+            patch.object(models, "_inpaint_model", inpaint),
+            patch.object(models, "_ctd_session", Mock()),
+            patch.object(models.torch.cuda, "empty_cache") as empty_cache,
+        ):
+            models.release_gpu_memory()
+            for model in (detector, ocr_model, inpaint):
+                model.to.assert_called_once_with("cpu")
+            self.assertIsNone(models._ctd_session)
+            self.assertEqual(ocr_model.decoder._mask_cache, {})
+            empty_cache.assert_called_once()
+            models.get_detector()
+            detector.to.assert_called_with("cuda")
 
 
 class SettingsTests(unittest.TestCase):
@@ -368,6 +467,50 @@ class WebTests(unittest.TestCase):
                 event = socket.receive_json()
         self.assertEqual(event, {"type": "error", "message": "test failure"})
         self.assertEqual(web.JOBS[job_id]["status"], "failed")
+
+    def test_region_translation_unloads_large_model_before_rendering(self):
+        job_id = self.upload()
+        web._save_pages(job_id, [{"page": 1, "filename": "page.png", "bubbles": []}])
+        events = []
+
+        def translate(items, *args, **kwargs):
+            events.append("translate")
+            items[0]["translation"] = "Hello"
+
+        def draw(image, *args, **kwargs):
+            events.append("render")
+            return image
+
+        with (
+            patch.object(
+                web,
+                "detect_bubbles",
+                return_value=[
+                    {
+                        "x": 0,
+                        "y": 0,
+                        "width": 20,
+                        "height": 20,
+                        "class": "text_bubble",
+                    }
+                ],
+            ),
+            patch.object(web, "ocr_region", return_value="Hello"),
+            patch.object(web, "translate_batch", side_effect=translate),
+            patch.object(web, "draw_results", side_effect=draw),
+            patch.object(
+                llm, "release_gpu_memory", side_effect=lambda: events.append("release_small")
+            ),
+            patch.object(
+                llm, "unload_model", side_effect=lambda model: events.append("unload_large")
+            ),
+        ):
+            response = self.client.post(
+                f"/api/job/{job_id}/page/1/detect-region",
+                json={"x": 0, "y": 0, "w": 40, "h": 50},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(events, ["release_small", "translate", "unload_large", "render"])
 
 
 if __name__ == "__main__":
