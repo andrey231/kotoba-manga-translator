@@ -47,36 +47,22 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 
 <sub>*愛さずにはいられない* by よしまさこ. From the [Manga109](http://www.manga109.org/) dataset, used under the Manga109 research license for non-commercial purposes. © よしまさこ / 集英社.</sub>
 
-## What makes it different
-
-| | Kotoba | Most other tools |
-|---|---|---|
-| Tracks characters across pages | ✅ | ❌ |
-| Scene-aware translation (knows what's happening on the page) | ✅ | ❌ |
-| Portable Python — no system install needed | ✅ (Windows) | Usually a `pip install` chore |
-| Fully local, no cloud APIs | ✅ | Mixed |
-| Web UI with drag-and-drop + editor + i18n | ✅ EN/RU | Some |
-
 ## Pipeline
 
 ```
-Page image
-  │
-  ├─► Bubble detection         (RT-DETRv2)
-  ├─► OCR per bubble           (Hayai OCR v2.5 Nova via transformers)
-  ├─► Page analysis            (vision LLM — characters + dialogue links)
-  ├─► Speaker attribution      (vision LLM — who said what)
-  ├─► Batch translation        (text LLM — uses speaker and neighboring dialogue)
-  ├─► Original text removal    (anime-big-lama inpainting)
-  └─► Translated text render   (PIL — auto font size, smart wrapping)
+All pages: bubble detection (RT-DETRv2) → OCR (Hayai OCR v2.5 Nova)
+All pages: page analysis → speaker attribution → translation (Ollama vision model)
+All pages: text masks → inpainting (anime-big-lama) → translated text rendering
 ```
-A **Fast mode** toggle skips the page-analysis and attribution stages — useful for quick drafts when context isn't critical (saves ~30-60 seconds per page).
+
+The local detection and OCR models finish their pass before the selected Ollama model is loaded for the chapter. The Ollama model is unloaded before GPU inpainting starts. This avoids switching large models between pages. **Fast mode** skips page analysis and speaker attribution for a quicker draft; translation then has less context.
 
 ## Code structure
 
 The pipeline is coordinated by `manga_translator.py`. Model loading, OCR, page analysis,
 translation, rendering, image conversion, settings and persistence live in separate Python
-modules. `web.py` exposes the API; `web_ui.html` and `static/` contain the frontend.
+modules. `web.py` exposes the API; `ollama_models.py` checks model capabilities;
+`web_ui.html` and `static/` contain the frontend.
 
 See [architecture and model data contracts](docs/ARCHITECTURE.md) for the module map,
 canonical bubble format, compatibility with saved jobs and verification commands.
@@ -95,19 +81,20 @@ python manga_translator.py input --output-dir results --llm-model YOUR_MODEL --t
 - **Windows 10/11, Linux, or macOS** (Apple Silicon supported)
 - **Ollama** — install from https://ollama.com and pull a vision-capable model:
   ```
-  ollama pull gemma4:26b   # or any vision-capable model: llava, gemma3:27b, qwen2.5-vl, etc.
+  ollama pull qwen3.8:27b   # or another model with vision support
   ```
-  Hayai OCR and its SigLIP2 image processor download automatically from Hugging Face on first run — no Ollama OCR model is needed.
-- **~10 GB free disk space** for the portable Python environment and model weights
+  The web UI checks Ollama's reported model capabilities when listing installed models. Hayai OCR and its SigLIP2 image processor download from Hugging Face when first needed; no Ollama OCR model is needed.
+- **Disk space** for the portable Python environment, Hugging Face weights and your chosen Ollama model; large vision models can require tens of gigabytes
 - **GPU recommended** — works on CPU but each page takes much longer. NVIDIA cards use CUDA automatically.
 
 ## Quick start (Windows — fully portable)
 
 1. Download or clone the repo into any folder (paths with spaces are fine).
-2. Double-click **`run.bat`**.
-3. On first launch the script downloads a portable Python interpreter (~10 MB) plus all dependencies (~5 GB with CUDA torch) into a `python_embed/` subfolder. Your system Python is not touched.
-4. Your browser opens to http://localhost:8000 automatically.
-5. Drag a chapter (or a single page) onto the page and click translate.
+2. Install [Ollama](https://ollama.com), start it, and pull a vision-capable model as shown above.
+3. Double-click **`run.bat`**.
+4. On first launch the script downloads a portable Python interpreter (~10 MB) plus dependencies into a `python_embed/` subfolder. Your system Python is not touched.
+5. Your browser opens to http://localhost:8000 automatically.
+6. Select page images or a ZIP/CBZ chapter archive, choose a model, and start translating.
 
 Subsequent launches are instant.
 
@@ -138,15 +125,16 @@ PyTorch is installed separately so you can pick the right build. `cu128` support
 
 Once the web UI is open:
 
-1. **Translate** tab — drag and drop one or more page images, or a folder. Configure:
+1. **Translate** tab — select or drop page images, or a ZIP/CBZ chapter archive. Configure:
    - **Target language** — Russian, English, etc.
-   - **LLM model** — vision-capable Ollama model (recommended: `gemma3:27b` or `gemma4:26b`; avoid abliterated builds — they often have broken vision/template tags)
+   - **LLM model** — an installed Ollama model with vision support, such as `qwen3.8:27b` or `gemma4:31b`. The picker groups models using Ollama's reported capabilities.
    - **Font** — optional path to a manga font (`Anime Ace`, `CC Wild Words`, etc.); Kotoba auto-picks the best bold font installed on your system
    - **Fast mode** — skip page analysis for quick drafts
-   - **Debug boxes** — overlay coloured rectangles showing OCR/translation status per bubble
+   - **Debug boxes** — enable them in Settings to overlay coloured rectangles showing OCR/translation status per bubble
 2. **Editor** tab — fix any bubble's translation and restyle it per bubble: font, size, colour, outline, bold/italic/underline, alignment, or rotation; move and resize the text box; then re-render the page.
 3. **Characters** tab — view and edit the auto-built character archive (`characters.json`).
 4. **Glossary** — define fixed term translations (source → target, with an optional note) that are always applied, even when context would suggest otherwise. Handy for names, place names, and recurring jargon so they stay consistent across the whole chapter.
+5. **Settings** — adjust detection, rendering, translation and diagnostic options.
 
 ## Configuration
 
@@ -160,10 +148,10 @@ Model weights cache to `~/.cache/huggingface/hub/` (anime-big-lama, RT-DETRv2, H
 
 Kotoba never sends your images, text, or anything else off your machine. The only network requests are:
 
-- **First launch:** downloads of the portable Python, dependencies, and model weights (LaMa, RT-DETRv2, Hayai OCR, comic-text-detector) from python.org, PyPI, and HuggingFace.
-- **Each translation:** local HTTP to `localhost:11434` (Ollama).
+- **Setup and first model use:** downloads of portable Python, dependencies, and model weights (LaMa, RT-DETRv2, Hayai OCR, comic-text-detector) from python.org, PyPI, and Hugging Face.
+- **Each translation:** HTTP to the configured Ollama endpoint, local at `127.0.0.1:11434` by default.
 
-You can air-gap the machine after the initial setup and it will still work.
+After dependencies, model weights and the Ollama model have been downloaded, the default local setup can run offline.
 
 ## How character memory works
 
