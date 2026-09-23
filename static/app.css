@@ -46,7 +46,7 @@ main { padding: 36px 32px 64px; max-width: 1480px; margin: 0 auto; }
 
 .upload-zone {
   border: 1px dashed var(--control-border); border-radius: 12px;
-  padding: 44px 24px; text-align: center;
+  padding: 20px 24px; text-align: center;
   cursor: pointer; transition: background-color 0.15s;
   background: var(--surface);
 }
@@ -528,15 +528,17 @@ body { line-height: 1.5; }
 header h1 { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
 .brand-mark, .upload-icon { color: var(--accent-bright); flex-shrink: 0; }
 .brand-mark { width: 28px; height: 28px; }
-.upload-icon { display: block; width: 40px; height: 40px; margin: 0 auto 20px; }
+.upload-icon { display: block; width: 28px; height: 28px; margin: 0 auto 8px; }
 .page-heading { margin-bottom: 28px; }
 .page-heading h2, .panel-heading h2 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.5px; }
 .page-heading p { color: var(--muted); margin: 8px 0 0; font-size: 14px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
 .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.toolbar-actions > button { height: 40px; padding: 0 16px; line-height: 20px; display: inline-flex; align-items: center; justify-content: center; }
+#panel-characters .panel-heading { margin-bottom: 32px; }
 .upload-zone strong { font-size: 18px; font-weight: 550; color: var(--text); }
 .upload-zone p { font-size: 14px; }
-.upload-formats { display: inline-block; margin-top: 14px; color: var(--muted); font-size: 11px; letter-spacing: 1px; }
+.upload-formats { display: inline-block; margin-top: 4px; color: var(--muted); font-size: 11px; letter-spacing: 1px; }
 .tab, .lang-btn { background: transparent; border: 1px solid transparent; font-weight: 500; }
 .tab.active { border-color: #3a5d8a; }
 button, input, select, textarea, [tabindex] { -webkit-tap-highlight-color: transparent; }

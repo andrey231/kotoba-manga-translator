@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -23,6 +24,7 @@ from image_io import SUPPORTED_EXTENSIONS, clip_box, read_image, to_pil, write_i
 from llm import model_phase
 from models import detect_bubbles
 from ocr import ocr_region
+from ollama_models import model_capabilities
 from rendering import draw_results
 from settings import Settings, settings, use_settings
 from storage import write_json
@@ -135,7 +137,12 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return HTMLResponse((Path(__file__).parent / "web_ui.html").read_text(encoding="utf-8"))
+    root = Path(__file__).parent
+    html = (root / "web_ui.html").read_text(encoding="utf-8")
+    for filename in ("app.css", "app.js"):
+        version = hashlib.sha256((root / "static" / filename).read_bytes()).hexdigest()[:16]
+        html = html.replace(f"/static/{filename}", f"/static/{filename}?v={version}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 OLLAMA_HOST = settings().ollama_url.removesuffix("/api/generate")
@@ -186,6 +193,7 @@ KNOWN_MULTIMODAL = (
     "qwen2-vl",
     "qwen2.5-vl",
     "qwen-vl",
+    "qwen3.8",
     "llama3.2-vision",
     "llama4",
     "pixtral",
@@ -244,7 +252,13 @@ async def list_models():
         size_bytes = m.get("size", 0)
 
         ocr = _is_ocr(name, family, families)
-        is_multi = _is_multimodal(name, family, families) if not ocr else False
+        capabilities = None if ocr else model_capabilities(OLLAMA_HOST, name)
+        if ocr:
+            is_multi = False
+        elif capabilities is not None:
+            is_multi = "vision" in capabilities
+        else:
+            is_multi = _is_multimodal(name, family, families)
 
         out.append(
             {

@@ -14,9 +14,12 @@ venv with the dependencies already installed.
 import os
 import sys
 
+sys.stdout.reconfigure(errors="replace")
+sys.stderr.reconfigure(errors="replace")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from settings import settings
+from ollama_models import model_capabilities
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -85,11 +88,19 @@ def check_ollama():
         "molmo",
         "phi",
     )
-    multimodal = [
-        m["name"]
-        for m in models
-        if any(h in m["name"].lower() for h in hints) and "ocr" not in m["name"].lower()
-    ]
+    multimodal = []
+    for model in models:
+        name = model["name"]
+        if "ocr" in name.lower():
+            continue
+        capabilities = model_capabilities(ollama_host, name)
+        is_multimodal = (
+            "vision" in capabilities
+            if capabilities is not None
+            else any(h in name.lower() for h in hints)
+        )
+        if is_multimodal:
+            multimodal.append(name)
 
     if multimodal:
         ok(
