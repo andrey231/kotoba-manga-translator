@@ -131,7 +131,7 @@ def _analyze_and_attribute(
     logger.debug("\n── Page analysis ──")
     stage("stage_analyze")
     characters_context, page_context, page_summary = analyze_page_full(
-        image_path, archive, manga_ctx, page_idx
+        image_path, archive, manga_ctx, page_idx, text_bubbles
     )
     logger.debug(characters_context)
     logger.debug(f"  context: {page_context}")

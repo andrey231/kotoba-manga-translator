@@ -106,7 +106,7 @@ class MangaContext:
 
     def to_prompt(self) -> str:
         if not self.page_summaries:
-            return "This is the first page."
+            return ""
         lines = "\n".join(f"Page {page}: {summary}" for page, summary in self.page_summaries)
         return f"STORY SO FAR:\n{lines}"
 

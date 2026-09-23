@@ -5,7 +5,7 @@
 
 **A manga translator that remembers characters across pages.**
 
-Most automatic manga translators handle each speech bubble in isolation, so they re-translate the same character with a different name, get the wrong grammatical gender, or miss tone shifts. Kotoba builds up a **character archive** as it processes a chapter — recording each speaker's appearance, gender, and behavior — then uses that context plus per-page scene analysis to translate bubbles more consistently.
+Most automatic manga translators handle each speech bubble in isolation, so they re-translate the same character with a different name, get the wrong grammatical gender, or miss tone shifts. Kotoba builds up a **character archive** as it processes a chapter — recording each speaker's appearance and gender — then uses dialogue links and neighboring source text to translate bubbles more consistently.
 
 Everything runs **locally** on your machine via [Ollama](https://ollama.com). No cloud API keys.
 
@@ -64,9 +64,9 @@ Page image
   │
   ├─► Bubble detection         (RT-DETRv2)
   ├─► OCR per bubble           (Hayai OCR v2.5 Nova via transformers)
-  ├─► Page analysis            (vision LLM — characters + scene)
+  ├─► Page analysis            (vision LLM — characters + dialogue links)
   ├─► Speaker attribution      (vision LLM — who said what)
-  ├─► Batch translation        (text LLM — uses speaker, gender, scene)
+  ├─► Batch translation        (text LLM — uses speaker and neighboring dialogue)
   ├─► Original text removal    (anime-big-lama inpainting)
   └─► Translated text render   (PIL — auto font size, smart wrapping)
 ```
@@ -175,7 +175,7 @@ The next page sees the updated archive. Over a chapter this becomes detailed eno
 - Translations use the **right grammatical gender** (critical for Russian and other gendered languages)
 - The model knows **who is speaking** without re-analyzing the whole page
 
-Same applies to scene context: a short summary of each page accumulates over the chapter, so dialogue on page 15 can reference "the bald hero seen earlier in the alley".
+Each translation batch sees nearby dialogue from the current page, even when it falls outside that batch. Page analysis supplies only clear links between utterances, avoiding speculative scene summaries.
 
 ## Known limitations
 

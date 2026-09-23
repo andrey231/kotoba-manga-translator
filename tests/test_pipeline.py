@@ -19,6 +19,7 @@ import image_io
 import llm
 import models
 import ocr
+import page_analysis
 import rendering
 import translation
 import web
@@ -193,6 +194,59 @@ class ModelContractTests(unittest.TestCase):
 
 
 class TranslationTests(unittest.TestCase):
+    def test_page_context_accepts_only_nearby_dialogue_links(self):
+        bubbles = [{"text": "OSと痴話ゲンカすんなっつの"}, {"text": "会長"}]
+        response = """=== CHARACTERS ===
+[]
+=== DIALOGUE LINKS ===
+[
+  {"bubble": 2, "related_bubble": 1, "relation": "continues"},
+  {"bubble": 2, "source": "Ubuntu", "note": "The president uses Ubuntu."},
+  {"bubble": 1, "related_bubble": 2, "relation": ["continues"]},
+  {"bubble": 1, "related_bubble": 2, "relation": "reply_to"},
+  {"bubble": 3, "related_bubble": 1, "relation": "continues"}
+]
+=== END ==="""
+        archive = Mock(characters={})
+        archive.to_prompt.return_value = "CHARACTER ARCHIVE: empty"
+        with patch.object(page_analysis, "ollama", return_value=response) as call:
+            _, context, summary = page_analysis.analyze_page_full(
+                "page.png", archive, translation.MangaContext(), 1, bubbles
+            )
+        self.assertIn("[1] OSと痴話ゲンカすんなっつの", call.call_args.args[1])
+        self.assertEqual(context, "Bubble 2 continues bubble 1.")
+        self.assertEqual(summary, "")
+
+    def test_translation_sees_source_from_other_chunks_in_page_order(self):
+        items = [
+            (0, {"text": "前の台詞"}),
+            (1, {"text": "今の台詞"}),
+            (2, {"text": "後の台詞"}),
+        ]
+        entries = translation._build_chunk_entries([items[1]], {})
+        prompt = translation._build_translation_prompt(
+            entries, "Bubble 2 continues bubble 1.", translation.MangaContext(), items
+        )
+        self.assertIn("[1] 前の台詞\n[3] 後の台詞", prompt)
+        self.assertIn('"page_bubble": 2', prompt)
+        self.assertNotIn("[2] 今の台詞", prompt)
+
+    def test_attribution_rejects_speaker_outside_character_archive(self):
+        bubbles = [{"x": 1, "y": 2, "width": 10, "height": 10, "text": "会長"}]
+        archive = Mock()
+        archive.to_prompt.return_value = "CHARACTER ARCHIVE: empty"
+        archive.find_character.return_value = None
+        with (
+            patch.object(page_analysis, "read_image", return_value=np.zeros((50, 50, 3))),
+            patch.object(
+                page_analysis, "ollama",
+                return_value='[{"bubble": 1, "speaker": "Invented Person", "gender": "male"}]',
+            ),
+        ):
+            page_analysis.attribute_bubbles("page.png", bubbles, "", "", archive)
+        self.assertEqual(bubbles[0]["speaker"], "unknown")
+        self.assertEqual(bubbles[0]["gender"], "unknown")
+
     def test_translation_batches_respect_size_and_keep_offsets(self):
         items = [(i, {"text": "文" * 400}) for i in range(4)]
         chunks = list(
