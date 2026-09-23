@@ -2,19 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kotoba — Manga Translator</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
 <header>
-  <h1>📖 <span data-i18n="app_title">Kotoba</span></h1>
+  <h1><svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 5v15M3 4c4-1 6 0 9 1 3-1 5-2 9-1v14c-4-1-6 0-9 2-3-2-5-3-9-2Z"/></svg><span data-i18n="app_title">Kotoba</span></h1>
   <div class="tabs">
-    <div class="tab active" data-panel="translate"  data-i18n="tab_translate">Translate</div>
-    <div class="tab" data-panel="editor"             data-i18n="tab_editor">Editor</div>
-    <div class="tab" data-panel="characters"         data-i18n="tab_characters">Characters</div>
-    <div class="tab" data-panel="glossary"           data-i18n="tab_glossary">Glossary</div>
-    <div class="tab" data-panel="settings"           data-i18n="tab_settings">Settings</div>
+    <button type="button" class="tab active" data-panel="translate"  data-i18n="tab_translate">Translate</button>
+    <button type="button" class="tab" data-panel="editor"             data-i18n="tab_editor">Editor</button>
+    <button type="button" class="tab" data-panel="characters"         data-i18n="tab_characters">Characters</button>
+    <button type="button" class="tab" data-panel="glossary"           data-i18n="tab_glossary">Glossary</button>
+    <button type="button" class="tab" data-panel="settings"           data-i18n="tab_settings">Settings</button>
   </div>
   <div class="job-id-pill" id="job-id-pill">
     <span class="job-label" data-i18n="job_id_label">Job ID:</span>
@@ -27,8 +28,8 @@
     </span>
   </div>
   <div class="lang-switcher">
-    <div class="lang-btn active" data-lang="en">EN</div>
-    <div class="lang-btn"        data-lang="ru">RU</div>
+    <button type="button" class="lang-btn active" data-lang="en">EN</button>
+    <button type="button" class="lang-btn"        data-lang="ru">RU</button>
   </div>
 </header>
 
@@ -36,9 +37,12 @@
 
 <!-- ─── Panel: Translate ─── -->
 <div class="panel active" id="panel-translate">
-  <div class="upload-zone" id="upload-zone">
+  <div class="page-heading"><h2 data-i18n="workspace_title">Translate a chapter</h2><p data-i18n="workspace_desc">Add your pages, choose a language, and bring the story to life.</p></div>
+  <div class="upload-zone" id="upload-zone" role="button" tabindex="0">
+    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg>
     <p><strong data-i18n="upload_drop">Drop chapter pages here</strong></p>
     <p data-i18n="upload_or_click">or click to choose files (jpg, png, webp)</p>
+    <span class="upload-formats">JPG · PNG · WEBP · ZIP · CBZ</span>
     <input type="file" id="file-input" multiple accept="image/*,.zip,.cbz" style="display:none">
   </div>
 
@@ -115,7 +119,7 @@
       <label style="font-size:12px; color:#999;" data-i18n="editor_page">Page:</label>
       <select id="editor-page-select"></select>
     </div>
-    <div style="display:flex; gap:8px;">
+    <div class="toolbar-actions">
       <button class="btn-secondary" id="btn-reload-job" data-i18n="editor_load_job">Load job...</button>
       <button class="btn-secondary" id="btn-detect-region" data-i18n="editor_detect_region">🔍 Detect region</button>
       <button id="btn-rerender" data-i18n="editor_rerender">💾 Save and re-render</button>
@@ -140,9 +144,9 @@
 
 <!-- ─── Panel: Characters ─── -->
 <div class="panel" id="panel-characters">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-    <h2 style="margin:0; font-size:18px;" data-i18n="characters_title">Character archive</h2>
-    <div style="display:flex; gap:8px;">
+  <div class="panel-heading">
+    <h2 data-i18n="characters_title">Character archive</h2>
+    <div class="toolbar-actions">
       <button class="btn-secondary" id="btn-reload-chars" data-i18n="characters_reload">Reload</button>
       <button class="btn-danger" id="btn-clear-chars" data-i18n="characters_clear">🗑 Clear all</button>
       <button id="btn-save-chars" data-i18n="characters_save">💾 Save</button>
@@ -155,10 +159,10 @@
 
 <!-- ─── Panel: Glossary ─── -->
 <div class="panel" id="panel-glossary">
-  <div style="max-width:860px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-      <h2 style="margin:0; font-size:18px;" data-i18n="tab_glossary">Glossary</h2>
-      <div style="display:flex; gap:8px;">
+  <div class="glossary-panel">
+    <div class="panel-heading">
+      <h2 data-i18n="tab_glossary">Glossary</h2>
+      <div class="toolbar-actions">
         <button class="btn-secondary" id="btn-gloss-import" data-i18n="gloss_import">Import JSON</button>
         <button class="btn-secondary" id="btn-gloss-export" data-i18n="gloss_export">Export JSON</button>
         <input type="file" id="gloss-import-file" accept=".json" style="display:none">
@@ -189,6 +193,7 @@
 
 <!-- ─── Panel: Settings ─── -->
 <div class="panel" id="panel-settings">
+  <div class="page-heading"><h2 data-i18n="tab_settings">Settings</h2></div>
   <div class="settings-panel">
 
     <!-- Detection -->

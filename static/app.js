@@ -4,6 +4,8 @@
 
 const I18N = {
   en: {
+    workspace_title: "Translate a chapter",
+    workspace_desc: "Add your pages, choose a language, and bring the story to life.",
     app_title:        "Kotoba",
     tab_translate:    "Translate",
     tab_editor:       "Editor",
@@ -140,6 +142,8 @@ const I18N = {
     gloss_placeholder_note: "Note (optional)",
   },
   ru: {
+    workspace_title: "Перевод главы",
+    workspace_desc: "Добавьте страницы, выберите язык и оживите историю.",
     app_title:        "Kotoba",
     tab_translate:    "Перевод",
     tab_editor:       "Редактор",
@@ -344,6 +348,12 @@ document.querySelectorAll('.tab').forEach(tab => {
 //═════════════════════════════════════════════════════════════════════
 
 const uploadZone = $('upload-zone');
+uploadZone.addEventListener('keydown', event => {
+  if (event.target === uploadZone && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    $('file-input').click();
+  }
+});
 const fileInput = $('file-input');
 
 uploadZone.onclick = () => fileInput.click();
