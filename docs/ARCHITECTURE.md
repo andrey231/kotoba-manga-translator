@@ -73,7 +73,7 @@ OCR-фрагменты сохраняются только при явно вк�
 Обычный Python с установленными зависимостями:
 
 ```sh
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements.txt ruff
 ruff check .
 ruff format --check .
 node --check static/app.js
