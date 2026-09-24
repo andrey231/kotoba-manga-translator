@@ -95,6 +95,14 @@ python manga_translator.py input --output-dir results --llm-model YOUR_MODEL --t
 
 Subsequent launches are instant.
 
+If Windows Defender blocks GitHub's generated **Download ZIP** archive, keep protection enabled and clone the source instead:
+
+```powershell
+git clone https://github.com/andrey231/kotoba-manga-translator.git
+```
+
+The project does not include Python binaries or model weights. `run.bat` downloads Python and packages from their official sources on first launch. A Defender detection on the source archive should be reviewed as a possible false positive before allowing that archive.
+
 ## Quick start (Linux / macOS)
 
 ```bash
