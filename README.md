@@ -47,6 +47,18 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 
 <sub>*愛さずにはいられない* by よしまさこ. From the [Manga109](http://www.manga109.org/) dataset, used under the Manga109 research license for non-commercial purposes. © よしまさこ / 集英社.</sub>
 
+## Web interface
+
+**Translate** — upload pages or a ZIP/CBZ chapter, pick the language and model, follow the progress, and download the result. Earlier chapters are one click away in **My chapters**.
+
+<img src="docs/screenshot_translate.png" alt="Translate tab: upload zone, language and model settings, progress log, download buttons and the translated page">
+
+**Editor** — fix any bubble's translation, change its font, size, colour, outline, alignment, position or angle, and re-render the page. In auto mode the size field shows the font size Kotoba picked.
+
+<img src="docs/screenshot_editor.png" alt="Editor tab: translated page with a highlighted bubble and the per-bubble settings panel">
+
+<sub>Screenshots show *Pepper&Carrot* by [David Revoy](https://www.peppercarrot.com/), [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/), Chinese localization by the Pepper&Carrot community, translated to English by Kotoba.</sub>
+
 ## Pipeline
 
 ```

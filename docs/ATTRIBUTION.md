@@ -9,7 +9,8 @@
 You are free to share and adapt the material for any purpose, even commercially, provided you give appropriate credit.
 
 The Chinese localization shown in `sample_1_original.jpg` was contributed by the Pepper&Carrot community.  
-`sample_1_translated.png` is a derivative work produced by Kotoba and is distributed under the same CC-BY 4.0 license.
+`sample_1_translated.png` is a derivative work produced by Kotoba and is distributed under the same CC-BY 4.0 license.  
+The web interface screenshots `screenshot_translate.png` and `screenshot_editor.png` show the same page and its Kotoba translation, under the same CC-BY 4.0 license.
 
 Support the artist: https://www.peppercarrot.com/
 
