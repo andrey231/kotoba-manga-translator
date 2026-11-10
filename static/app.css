@@ -123,12 +123,13 @@ button:disabled { background: var(--border); color: var(--muted); cursor: not-al
 
 .export-bar {
   margin-top: 16px;
-  display: flex; align-items: center; gap: 12px;
+  display: none; align-items: center; gap: 12px;
   flex-wrap: wrap;
   padding: 12px 16px;
   background: var(--background); border-radius: 8px;
   border: 1px solid #2a2a2a;
 }
+.export-bar.visible { display: flex; }
 .export-bar .export-hint {
   color: #888; font-size: 13px; margin-right: auto;
 }
@@ -548,6 +549,62 @@ header h1 { display: flex; align-items: center; gap: 10px; white-space: nowrap; 
 .brand-mark { width: 28px; height: 28px; }
 .upload-icon { display: block; width: 28px; height: 28px; margin: 0 auto 8px; }
 .page-heading { margin-bottom: 28px; }
+.page-heading-actions { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.btn-open-jobs { flex: none; padding: 9px 16px; }
+.jobs-dialog {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px 16px; background: rgba(0, 0, 0, 0.65);
+}
+.jobs-dialog[hidden] { display: none; }
+.jobs-dialog-box {
+  width: min(720px, 100%); max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface); border: 1px solid var(--control-border); border-radius: 12px;
+  padding: 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.jobs-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.jobs-dialog-head h3 { margin: 0; font-size: 18px; font-weight: 600; }
+.jobs-close {
+  background: none; color: var(--muted); padding: 4px 9px; font-size: 14px; border-radius: 6px;
+}
+.jobs-close:hover { background: #3a3a3a; color: #fff; }
+.jobs-search, .jobs-by-id input {
+  width: 100%; min-width: 0; padding: 9px 12px; font-size: 13px;
+  background: #2a2a2a; border: 1px solid var(--control-border); border-radius: 6px; color: var(--text);
+}
+.jobs-search:focus, .jobs-by-id input:focus { outline: none; border-color: var(--accent-bright); }
+.jobs-list {
+  flex: 1; min-height: 120px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 6px; margin: 0 -4px; padding: 0 4px;
+}
+.jobs-list .empty { padding: 40px 16px; }
+.job-row {
+  display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  padding: 8px 12px 8px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--background); color: var(--text); cursor: pointer;
+}
+.job-row:hover, .job-row:focus-visible { background: #1e2a3a; border-color: var(--accent-bright); outline: none; }
+.job-row.current { border-color: var(--accent); }
+.job-thumb {
+  flex: none; width: 54px; height: 76px; border-radius: 4px; object-fit: cover; object-position: top;
+  background: #2a2a2a;
+}
+.job-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.job-title {
+  font-size: 14px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.job-details { font-size: 12px; color: var(--muted); }
+.job-details span + span::before { content: "·"; margin: 0 6px; color: #555; }
+.job-id { font-size: 11px; color: #6a8aaa; font-family: monospace; }
+.job-tag {
+  flex: none; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: #2f3d50; color: #8fb3e0;
+}
+.job-tag.partial { background: #4a3a20; color: #e0b46a; }
+.jobs-by-id { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.jobs-by-id button { flex: none; padding: 8px 14px; font-size: 13px; }
 .page-heading h2, .panel-heading h2 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.5px; }
 .page-heading p { color: var(--muted); margin: 8px 0 0; font-size: 14px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }

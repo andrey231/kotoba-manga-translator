@@ -104,6 +104,63 @@ def _save_pages(job_id: str, pages: list) -> None:
     write_json(path, pages)
 
 
+def _job_title(upload_names: list[str]) -> str:
+    names = sorted((name for name in upload_names if name), key=natural_key)
+    if not names:
+        return ""
+    title = Path(names[0]).stem
+    if len(names) > 1:
+        title = f"{title} … {Path(names[-1]).stem}"
+    return title[:120]
+
+
+def _job_summary(job_file: Path) -> dict | None:
+    job_id = job_file.stem
+    try:
+        pages = json.loads(job_file.read_text(encoding="utf-8"))
+        config = _load_config(job_id)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(pages, list):
+        return None
+
+    pages = sorted(pages, key=lambda page: page.get("page", 0))
+    upload_dir = UPLOADS_DIR / job_id
+    uploads = (
+        sorted(
+            (
+                path.name
+                for path in upload_dir.iterdir()
+                if path.suffix.lower() in SUPPORTED_EXTENSIONS
+            ),
+            key=natural_key,
+        )
+        if upload_dir.is_dir()
+        else []
+    )
+    thumb = None
+    for page in pages:
+        result = RESULTS_DIR / job_id / f"{Path(page.get('filename', '')).stem}_translated.png"
+        if result.is_file():
+            thumb = f"/files/results/{job_id}/{result.name}?v={result.stat().st_mtime_ns}"
+            break
+    if thumb is None and uploads:
+        thumb = f"/files/uploads/{job_id}/{uploads[0]}"
+
+    return {
+        "job_id": job_id,
+        "title": config.get("title") or _job_title([page.get("filename", "") for page in pages]),
+        "updated": job_file.stat().st_mtime,
+        "pages_done": len(pages),
+        "pages_total": max(len(uploads), len(pages)),
+        "bubbles": sum(len(page.get("bubbles", [])) for page in pages),
+        "target_lang": config.get("target_lang"),
+        "llm_model": config.get("llm_model"),
+        "status": JOBS.get(job_id, {}).get("status"),
+        "thumb": thumb,
+    }
+
+
 def _load_config(job_id: str) -> dict:
     config_path = JOBS_DIR / f"{job_id}_config.json"
     return json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
@@ -373,8 +430,10 @@ async def upload_chapter(
     result_dir.mkdir(parents=True, exist_ok=True)
 
     extracted_total = 0
+    upload_names = []
     for f in files:
         upload_name = (f.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+        upload_names.append(upload_name)
         ext = Path(upload_name).suffix.lower()
         if ext in {".zip", ".cbz"}:
             data = await f.read()
@@ -407,6 +466,7 @@ async def upload_chapter(
     JOBS[job_id] = {
         "status": "ready",
         "config": {
+            "title": _job_title(upload_names),
             "target_lang": target_lang,
             "font_path": font_path,
             "debug": debug,
@@ -559,6 +619,17 @@ async def abort_job(job_id: str):
     JOBS[job_id]["cancel_event"].set()
     JOBS[job_id]["status"] = "cancelled"
     return {"ok": True}
+
+
+@app.get("/api/jobs")
+async def list_jobs():
+    job_files = (path for path in JOBS_DIR.glob("*.json") if _JOB_ID_RE.fullmatch(path.stem))
+    summaries = (_job_summary(path) for path in job_files)
+    return sorted(
+        (summary for summary in summaries if summary),
+        key=lambda summary: summary["updated"],
+        reverse=True,
+    )
 
 
 @app.get("/api/job/{job_id}")
@@ -770,6 +841,7 @@ async def export_job(job_id: str, fmt: str = "zip"):
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(len(content)),
+            "Cache-Control": "no-store",
         },
     )
 

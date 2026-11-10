@@ -58,10 +58,25 @@ const I18N = {
     cfg_model_help:   "Multimodal Ollama models, used for character analysis, scene understanding, attribution and translation. Click 'Enter manually...' if your model is not listed.",
     job_id_label:     "Job ID:",
     job_id_what_title: "What is Job ID?",
-    job_id_what_desc: "A unique identifier for the current translation job. Use it to reopen this chapter in the Editor tab later — copy the ID and paste it via the \"Load job...\" button. Results stay available on the server as long as you do not clear them manually.",
+    job_id_what_desc: "A unique identifier for the current translation job. Every chapter is saved on the server — reopen it any time with the \"My chapters\" button. Results stay available as long as you do not clear them manually.",
     progress_preparing: "Preparing...",
     editor_page:      "Page:",
-    editor_load_job:       "Load job...",
+    jobs_open:        "📂 My chapters",
+    jobs_title:       "Saved chapters",
+    jobs_search:      "Search by name or ID",
+    jobs_id_placeholder: "Job ID",
+    jobs_open_id:     "Open by ID",
+    jobs_empty:       "No saved chapters yet",
+    jobs_no_match:    "Nothing found",
+    jobs_loading:     "Loading...",
+    jobs_load_failed: "Could not load the list: %1",
+    jobs_pages:       "%1 pages",
+    jobs_pages_partial: "%1 of %2 pages",
+    jobs_bubbles:     "%1 bubbles",
+    jobs_partial:     "incomplete",
+    jobs_running:     "translating",
+    jobs_current:     "open",
+    jobs_busy:        "Wait for the current translation to finish or abort it first.",
     editor_detect_region:  "🔍 Detect region",
     editor_detecting:      "Detecting...",
     editor_detect_none:    "No bubbles detected in selected area",
@@ -127,7 +142,6 @@ const I18N = {
     pick_images:      "Please choose images",
     btn_abort:        "Abort",
     aborted_log:      "Translation aborted.",
-    prompt_job_id:    "Enter job_id (visible while processing):",
     job_not_found:    "Could not load: %1",
     open_page_first:  "Open a page first",
     rerendering:      "Re-rendering...",
@@ -207,10 +221,25 @@ const I18N = {
     cfg_model_help:   "Мультимодальные модели Ollama для анализа персонажей, сцены, атрибуции и перевода. Если нужной модели нет в списке — нажмите «Ввести вручную...».",
     job_id_label:     "Job ID:",
     job_id_what_title: "Что такое Job ID?",
-    job_id_what_desc: "Уникальный идентификатор текущего перевода. Используется чтобы потом открыть главу заново на вкладке «Редактор» — скопируйте ID и вставьте через кнопку «Загрузить джоб...». Результаты на сервере хранятся пока вы их вручную не очистите.",
+    job_id_what_desc: "Уникальный идентификатор текущего перевода. Каждая глава сохраняется на сервере — откройте её в любой момент кнопкой «Мои главы». Результаты хранятся, пока вы их вручную не очистите.",
     progress_preparing: "Готовится...",
     editor_page:      "Страница:",
-    editor_load_job:       "Загрузить джоб...",
+    jobs_open:        "📂 Мои главы",
+    jobs_title:       "Сохранённые главы",
+    jobs_search:      "Поиск по названию или ID",
+    jobs_id_placeholder: "Job ID",
+    jobs_open_id:     "Открыть по ID",
+    jobs_empty:       "Сохранённых глав пока нет",
+    jobs_no_match:    "Ничего не найдено",
+    jobs_loading:     "Загрузка...",
+    jobs_load_failed: "Не удалось загрузить список: %1",
+    jobs_pages:       "%1 стр.",
+    jobs_pages_partial: "%1 из %2 стр.",
+    jobs_bubbles:     "баблов: %1",
+    jobs_partial:     "не завершена",
+    jobs_running:     "идёт перевод",
+    jobs_current:     "открыта",
+    jobs_busy:        "Дождитесь окончания текущего перевода или прервите его.",
     editor_detect_region:  "🔍 Детектировать область",
     editor_detecting:      "Детектирование...",
     editor_detect_none:    "Баблы не найдены в выбранной области",
@@ -274,7 +303,6 @@ const I18N = {
     pick_images:      "Выберите изображения",
     btn_abort:        "Прервать",
     aborted_log:      "Перевод прерван.",
-    prompt_job_id:    "Введите job_id (виден во время обработки):",
     job_not_found:    "Не удалось загрузить: %1",
     open_page_first:  "Откройте страницу",
     rerendering:      "Перерисовка...",
@@ -339,6 +367,7 @@ document.querySelectorAll(".lang-btn").forEach(btn => {
 //═════════════════════════════════════════════════════════════════════
 
 let currentJobId = null;
+let resultsJobId = null;
 let currentJobPages = [];
 let currentEditPage = null;
 let deletedBubbleIdxs = new Set();
@@ -409,10 +438,12 @@ async function startUpload(files) {
   // Reset shared state
   $('pages-grid').innerHTML = '';
   for (const key of Object.keys(processingCards)) delete processingCards[key];
+  resultsJobId = null;
   currentJobPages = [];
   currentEditPage = null;
   $('btn-export-zip').disabled = true;
   $('btn-export-cbz').disabled = true;
+  $('export-bar').classList.add('visible');
 
   if (!archiveMode) {
     // Natural sort by filename: page2 < page10 (same logic as backend)
@@ -455,6 +486,7 @@ async function startUpload(files) {
     if (!r.ok) throw new Error('Upload failed');
     const data = await r.json();
     currentJobId = data.job_id;
+    resultsJobId = data.job_id;
     $('job-id-display').textContent = data.job_id;
     $('job-id-pill').classList.add('visible');
     log(t("upload_done", data.job_id, data.total_pages), 'ok');
@@ -557,6 +589,8 @@ $('btn-abort').onclick = async () => {
 
   // Translate tab — очищаем карточки и прогресс, лог оставляем
   $('pages-grid').innerHTML = '';
+  $('export-bar').classList.remove('visible');
+  resultsJobId = null;
   for (const key of Object.keys(processingCards)) delete processingCards[key];
   $('progress-fill').style.width = '0%';
   $('progress-text').textContent = '';
@@ -640,30 +674,171 @@ function handleEvent(evt, total) {
   }
 }
 
-function replaceCardWithResult(page) {
-  const card = processingCards[page.page];
-  if (!card) return;
-  // Build clean result card in place
+function refreshResultThumbnail(jobId, pageNum, url) {
+  if (!url || jobId !== resultsJobId) return;
+  const img = document.querySelector(
+    `#pages-grid .page-card[data-page="${pageNum}"]:not(.processing) img`
+  );
+  if (img) img.src = `${url}?v=${Date.now()}`;
+}
+
+function fillResultCard(card, page, imageUrl) {
   card.classList.remove('processing');
   card.innerHTML = `
-    <img src="${page.url}" alt="Page ${page.page}">
+    <img src="${imageUrl}" alt="Page ${page.page}">
     <div class="meta">
       <span>${escapeHtml(page.filename)}</span>
       <span>${t("chars_count", page.bubbles.length)}</span>
     </div>
   `;
   card.onclick = () => openInEditor(page.page);
+}
+
+function replaceCardWithResult(page) {
+  const card = processingCards[page.page];
+  if (!card) return;
+  fillResultCard(card, page, page.url);
   delete processingCards[page.page];
 }
+
+function showResultCards(jobId, pages) {
+  const grid = $('pages-grid');
+  grid.innerHTML = '';
+  for (const key of Object.keys(processingCards)) delete processingCards[key];
+  const version = Date.now();
+  pages.forEach(page => {
+    const card = document.createElement('div');
+    card.className = 'page-card';
+    card.dataset.page = page.page;
+    const stem = page.filename.replace(/\.[^.]+$/, '');
+    const url = page.url || `/files/results/${jobId}/${encodeURIComponent(stem)}_translated.png`;
+    fillResultCard(card, page, `${url}?v=${version}`);
+    grid.appendChild(card);
+  });
+  resultsJobId = jobId;
+  $('progress-wrap').style.display = 'none';
+  $('export-bar').classList.add('visible');
+  $('btn-export-zip').disabled = !pages.length;
+  $('btn-export-cbz').disabled = !pages.length;
+}
+
+function translationRunning() {
+  return !!ws && ws.readyState === WebSocket.OPEN;
+}
+
+async function openJob(jobId) {
+  if (translationRunning() && jobId !== currentJobId) {
+    alert(t('jobs_busy'));
+    return false;
+  }
+  const r = await fetch(`/api/job/${encodeURIComponent(jobId)}`);
+  if (!r.ok) {
+    alert(t('job_not_found', r.status === 404 ? 'not found' : r.statusText));
+    return false;
+  }
+  const pages = await r.json();
+  pages.sort((a, b) => a.page - b.page);
+  currentJobId = jobId;
+  currentJobPages = pages;
+  currentEditPage = null;
+  $('job-id-display').textContent = jobId;
+  $('job-id-pill').classList.add('visible');
+  showResultCards(jobId, pages);
+  populatePageSelect();
+  if (pages.length) openEditPage(pages[0].page);
+  return true;
+}
+
+let jobsCache = [];
+
+function formatJobDate(seconds) {
+  return new Date(seconds * 1000).toLocaleString(LANG === 'ru' ? 'ru-RU' : 'en-US', {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function renderJobsList() {
+  const list = $('jobs-list');
+  const query = $('jobs-search').value.trim().toLowerCase();
+  const jobs = jobsCache.filter(job =>
+    !query || job.job_id.includes(query) || (job.title || '').toLowerCase().includes(query)
+  );
+  if (!jobs.length) {
+    list.innerHTML = `<div class="empty">${t(jobsCache.length ? 'jobs_no_match' : 'jobs_empty')}</div>`;
+    return;
+  }
+  list.innerHTML = '';
+  jobs.forEach(job => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'job-row' + (job.job_id === resultsJobId ? ' current' : '');
+    const pages = job.pages_done < job.pages_total
+      ? t('jobs_pages_partial', job.pages_done, job.pages_total)
+      : t('jobs_pages', job.pages_done);
+    const details = [formatJobDate(job.updated), pages, t('jobs_bubbles', job.bubbles)];
+    if (job.target_lang) details.push(job.target_lang);
+    if (job.llm_model) details.push(job.llm_model);
+    let tag = '';
+    if (job.status === 'running') tag = `<span class="job-tag">${t('jobs_running')}</span>`;
+    else if (job.job_id === resultsJobId) tag = `<span class="job-tag">${t('jobs_current')}</span>`;
+    else if (job.pages_done < job.pages_total) tag = `<span class="job-tag partial">${t('jobs_partial')}</span>`;
+    row.innerHTML = `
+      ${job.thumb ? `<img class="job-thumb" src="${job.thumb}" alt="" loading="lazy">` : '<span class="job-thumb"></span>'}
+      <span class="job-info">
+        <span class="job-title">${escapeHtml(job.title || job.job_id)}</span>
+        <span class="job-details">${details.map(d => `<span>${escapeHtml(d)}</span>`).join('')}</span>
+        <span class="job-id">${job.job_id}</span>
+      </span>
+      ${tag}
+    `;
+    row.onclick = async () => {
+      if (await openJob(job.job_id)) closeJobsDialog();
+    };
+    list.appendChild(row);
+  });
+}
+
+async function openJobsDialog() {
+  const dialog = $('jobs-dialog');
+  dialog.hidden = false;
+  $('jobs-search').value = '';
+  $('jobs-id-input').value = '';
+  $('jobs-list').innerHTML = `<div class="empty">${t('jobs_loading')}</div>`;
+  $('jobs-search').focus();
+  try {
+    const r = await fetch('/api/jobs');
+    if (!r.ok) throw new Error(r.statusText);
+    jobsCache = await r.json();
+    renderJobsList();
+  } catch (e) {
+    $('jobs-list').innerHTML = `<div class="empty">${escapeHtml(t('jobs_load_failed', e.message))}</div>`;
+  }
+}
+
+function closeJobsDialog() {
+  $('jobs-dialog').hidden = true;
+}
+
+$('btn-open-jobs').onclick = openJobsDialog;
+$('jobs-close').onclick = closeJobsDialog;
+$('jobs-search').addEventListener('input', renderJobsList);
+$('jobs-dialog').addEventListener('click', e => {
+  if (e.target === $('jobs-dialog')) closeJobsDialog();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('jobs-dialog').hidden) closeJobsDialog();
+});
+$('jobs-by-id').addEventListener('submit', async e => {
+  e.preventDefault();
+  const jobId = $('jobs-id-input').value.trim().toLowerCase();
+  if (jobId && await openJob(jobId)) closeJobsDialog();
+});
 
 //═════════════════════════════════════════════════════════════════════
 // editor
 //═════════════════════════════════════════════════════════════════════
 
-$('btn-reload-job').onclick = async () => {
-  const jobId = prompt(t("prompt_job_id"), currentJobId || '');
-  if (jobId) loadJob(jobId);
-};
+$('btn-reload-job').onclick = openJobsDialog;
 
 async function loadJob(jobId) {
   try {
@@ -1280,6 +1455,7 @@ document.addEventListener('mouseup', async e => {
     // Merge new bubbles + update URL in client-side page data
     currentEditPage.bubbles.push(...data.new_bubbles);
     if (data.url) currentEditPage.url = data.url;
+    refreshResultThumbnail(currentJobId, currentEditPage.page, data.url);
 
     // Rebuild page (image + sidebar)
     openEditPage(currentEditPage.page);
@@ -1355,6 +1531,7 @@ $('btn-rerender').onclick = async () => {
     const data = await r.json();
     currentEditPage.bubbles = data.bubbles;
     refreshAutoSizes(data.bubbles);
+    refreshResultThumbnail(currentJobId, currentEditPage.page, data.url);
     $('editor-image').innerHTML =
       `<img src="${data.url}?t=${Date.now()}" alt="Page" id="editor-img-main">` +
       `<div class="bubble-select-overlay" id="bubble-select-overlay"></div>`;
@@ -1749,10 +1926,11 @@ $('btn-export-zip').onclick = () => exportArchive('zip');
 $('btn-export-cbz').onclick = () => exportArchive('cbz');
 
 function exportArchive(fmt) {
-  if (!currentJobId) return;
+  const jobId = resultsJobId || currentJobId;
+  if (!jobId) return;
   // Anchor-based download: browser handles the file save dialog and
   // sends Content-Disposition headers from server.
-  const url = `/api/job/${currentJobId}/export?fmt=${fmt}`;
+  const url = `/api/job/${jobId}/export?fmt=${fmt}&v=${Date.now()}`;
   const a = document.createElement('a');
   a.href = url;
   a.download = '';   // honors server-side Content-Disposition
