@@ -641,6 +641,28 @@ async def get_job(job_id: str):
     return _load_pages(job_id)
 
 
+@app.patch("/api/job/{job_id}")
+async def rename_job(job_id: str, payload: dict):
+    _safe_id(job_id)
+    job_file = JOBS_DIR / f"{job_id}.json"
+    if not job_file.exists():
+        raise HTTPException(404, "Job not found")
+    title = payload.get("title")
+    if not isinstance(title, str):
+        raise HTTPException(400, "title must be text")
+
+    title = " ".join(title.split())[:120]
+    config = _load_config(job_id)
+    if title:
+        config["title"] = title
+    else:
+        config.pop("title", None)
+    write_json(JOBS_DIR / f"{job_id}_config.json", config)
+
+    summary = _job_summary(job_file)
+    return {"title": summary["title"] if summary else title}
+
+
 @app.post("/api/job/{job_id}/page/{page_idx}/render")
 @_serialize_model_work
 async def re_render_page(job_id: str, page_idx: int, payload: dict):

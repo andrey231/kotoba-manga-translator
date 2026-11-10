@@ -77,6 +77,9 @@ const I18N = {
     jobs_running:     "translating",
     jobs_current:     "open",
     jobs_busy:        "Wait for the current translation to finish or abort it first.",
+    jobs_rename:      "Rename",
+    jobs_rename_hint: "Leave empty to restore the default name",
+    jobs_rename_failed: "Could not rename: %1",
     editor_detect_region:  "🔍 Detect region",
     editor_detecting:      "Detecting...",
     editor_detect_none:    "No bubbles detected in selected area",
@@ -240,6 +243,9 @@ const I18N = {
     jobs_running:     "идёт перевод",
     jobs_current:     "открыта",
     jobs_busy:        "Дождитесь окончания текущего перевода или прервите его.",
+    jobs_rename:      "Переименовать",
+    jobs_rename_hint: "Оставьте пустым, чтобы вернуть название по умолчанию",
+    jobs_rename_failed: "Не удалось переименовать: %1",
     editor_detect_region:  "🔍 Детектировать область",
     editor_detecting:      "Детектирование...",
     editor_detect_none:    "Баблы не найдены в выбранной области",
@@ -769,8 +775,9 @@ function renderJobsList() {
   }
   list.innerHTML = '';
   jobs.forEach(job => {
-    const row = document.createElement('button');
-    row.type = 'button';
+    const row = document.createElement('div');
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
     row.className = 'job-row' + (job.job_id === resultsJobId ? ' current' : '');
     const pages = job.pages_done < job.pages_total
       ? t('jobs_pages_partial', job.pages_done, job.pages_total)
@@ -785,17 +792,85 @@ function renderJobsList() {
     row.innerHTML = `
       ${job.thumb ? `<img class="job-thumb" src="${job.thumb}" alt="" loading="lazy">` : '<span class="job-thumb"></span>'}
       <span class="job-info">
-        <span class="job-title">${escapeHtml(job.title || job.job_id)}</span>
+        <span class="job-title-line">
+          <span class="job-title">${escapeHtml(job.title || job.job_id)}</span>
+          <button type="button" class="job-rename" title="${t('jobs_rename')}" aria-label="${t('jobs_rename')}">✎</button>
+        </span>
         <span class="job-details">${details.map(d => `<span>${escapeHtml(d)}</span>`).join('')}</span>
         <span class="job-id">${job.job_id}</span>
       </span>
       ${tag}
     `;
-    row.onclick = async () => {
+    const open = async () => {
       if (await openJob(job.job_id)) closeJobsDialog();
     };
+    row.onclick = e => {
+      if (e.target.closest('.job-rename, .job-title-input')) return;
+      open();
+    };
+    row.onkeydown = e => {
+      if (e.target === row && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        open();
+      }
+    };
+    row.querySelector('.job-rename').onclick = () => startJobRename(row, job);
     list.appendChild(row);
   });
+}
+
+function startJobRename(row, job) {
+  const titleLine = row.querySelector('.job-title-line');
+  if (titleLine.querySelector('.job-title-input')) return;
+  const titleEl = titleLine.querySelector('.job-title');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'job-title-input';
+  input.maxLength = 120;
+  input.value = job.title || '';
+  input.placeholder = t('jobs_rename_hint');
+  input.title = t('jobs_rename_hint');
+  titleLine.classList.add('editing');
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = async save => {
+    if (done) return;
+    done = true;
+    let title = job.title;
+    if (save && input.value.trim() !== (job.title || '')) {
+      try {
+        const r = await fetch(`/api/job/${job.job_id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: input.value }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || r.statusText);
+        title = data.title;
+        job.title = title;
+      } catch (e) {
+        alert(t('jobs_rename_failed', e.message));
+      }
+    }
+    titleEl.textContent = title || job.job_id;
+    input.replaceWith(titleEl);
+    titleLine.classList.remove('editing');
+    row.focus();
+  };
+  input.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => finish(true));
 }
 
 async function openJobsDialog() {

@@ -591,10 +591,23 @@ header h1 { display: flex; align-items: center; gap: 10px; white-space: nowrap; 
   background: #2a2a2a;
 }
 .job-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.job-title-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .job-title {
-  font-size: 14px; font-weight: 600;
+  min-width: 0; font-size: 14px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.job-rename {
+  flex: none; padding: 0 6px; font-size: 13px; line-height: 22px; border-radius: 4px;
+  background: none; color: #777; opacity: 0; transition: opacity 0.12s;
+}
+.job-row:hover .job-rename, .job-row:focus-within .job-rename, .job-rename:focus-visible { opacity: 1; }
+.job-rename:hover { background: #3a3a3a; color: #fff; }
+.job-title-input {
+  flex: 1; min-width: 0; padding: 2px 8px; font-size: 14px; font-weight: 600;
+  background: #2a2a2a; border: 1px solid var(--accent-bright); border-radius: 4px; color: var(--text);
+}
+.job-title-input:focus { outline: none; }
+@media (hover: none) { .job-rename { opacity: 1; } }
 .job-details { font-size: 12px; color: var(--muted); }
 .job-details span + span::before { content: "·"; margin: 0 6px; color: #555; }
 .job-id { font-size: 11px; color: #6a8aaa; font-family: monospace; }
