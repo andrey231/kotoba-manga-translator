@@ -67,11 +67,22 @@ const I18N = {
     editor_detect_none:    "No bubbles detected in selected area",
     editor_detect_failed:  "Detection failed",
     editor_rerender:       "💾 Save and re-render",
-    editor_font:      "Font:",
-    editor_size:      "Size:",
-    editor_color:     "Color:",
-    editor_outline:   "Outline:",
-    editor_angle:     "Angle:",
+    editor_size:      "Font size",
+    editor_text_color: "Text color",
+    editor_outline:   "Outline",
+    editor_outline_color: "Outline color",
+    editor_outline_width: "Outline width, px",
+    editor_angle:     "Angle",
+    editor_center_x:  "Center X",
+    editor_center_y:  "Center Y",
+    editor_scale_w:   "Width",
+    editor_scale_h:   "Height",
+    editor_scale_hint: "Scale relative to the original box (1.0 = original)",
+    size_auto:        "AUTO",
+    size_auto_short:  "—",
+    size_manual:      "MANUAL",
+    size_auto_hint:   "Size picked automatically on the last render. Type a number to set it manually.",
+    size_reset_auto:  "Back to automatic size",
     editor_delete_bubble: "Clear translation (show original)",
     font_default:     "(default)",
     font_search:      "Search fonts...",
@@ -205,11 +216,22 @@ const I18N = {
     editor_detect_none:    "Баблы не найдены в выбранной области",
     editor_detect_failed:  "Ошибка детектирования",
     editor_rerender:       "💾 Сохранить и перерисовать",
-    editor_font:      "Шрифт:",
-    editor_size:      "Размер:",
-    editor_color:     "Цвет:",
-    editor_outline:   "Обводка:",
-    editor_angle:     "Угол:",
+    editor_size:      "Размер шрифта",
+    editor_text_color: "Цвет текста",
+    editor_outline:   "Обводка",
+    editor_outline_color: "Цвет обводки",
+    editor_outline_width: "Толщина обводки, px",
+    editor_angle:     "Угол",
+    editor_center_x:  "Центр X",
+    editor_center_y:  "Центр Y",
+    editor_scale_w:   "Ширина",
+    editor_scale_h:   "Высота",
+    editor_scale_hint: "Масштаб относительно исходной области (1.0 = оригинал)",
+    size_auto:        "АВТО",
+    size_auto_short:  "—",
+    size_manual:      "ВРУЧНУЮ",
+    size_auto_hint:   "Размер подобран автоматически при последней отрисовке. Введите число, чтобы задать вручную.",
+    size_reset_auto:  "Вернуть автоматический размер",
     editor_delete_bubble: "Убрать перевод (показать оригинал)",
     font_default:     "(по умолчанию)",
     font_search:      "Поиск шрифта...",
@@ -707,10 +729,10 @@ function openEditPage(pageNum) {
     item.className = 'bubble-item';
     item.dataset.bubbleIdx = b.idx;
 
-    const fontVal = b.font_path || '';
-    const sizeVal = b.font_size != null && b.font_size !== '' ? b.font_size : '';
+    const hasManualSize = b.font_size != null && b.font_size !== '';
+    const autoSize = b.rendered_font_size || '';
+    const sizeVal = hasManualSize ? b.font_size : autoSize;
 
-    // text_color: [r,g,b] array or hex string → #rrggbb
     let colorVal = '#000000';
     if (Array.isArray(b.text_color)) {
       colorVal = '#' + b.text_color.map(c => c.toString(16).padStart(2, '0')).join('');
@@ -718,86 +740,111 @@ function openEditPage(pageNum) {
       colorVal = b.text_color;
     }
 
-    // outline_color: [r,g,b] array or null → #rrggbb
     let outlineColorVal = '#ffffff';
     if (Array.isArray(b.outline_color)) {
       outlineColorVal = '#' + b.outline_color.map(c => c.toString(16).padStart(2, '0')).join('');
     }
     const outlineWidthVal = b.outline_width || 0;
 
-    // boolean style flags
     const isBold      = !!b.bold;
     const isItalic    = !!b.italic;
     const isUnderline = !!b.underline;
     const align       = b.text_align || 'center';
+    const speaker     = b.speaker && b.speaker !== 'unknown' ? escapeHtml(b.speaker) : '';
 
     item.innerHTML = `
-      <button type="button" class="bubble-delete-btn" data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
-      <div class="num">#${b.idx} ${b.speaker !== 'unknown' ? '— ' + escapeHtml(b.speaker) : ''}</div>
-      <div class="speaker">${b.x},${b.y} • ${b.width}×${b.height} • ${b.gender}</div>
-      <div class="original">${escapeHtml(b.text) || t("no_ocr")}</div>
-      <textarea data-idx="${b.idx}" data-field="translation">${escapeHtml(b.translation || '')}</textarea>
-      <div class="bubble-style">
-        <label data-i18n="editor_font">Font:</label>
+      <div class="bubble-head">
+        <span class="bubble-badge">#${b.idx}</span>
+        ${speaker ? `<span class="bubble-speaker">${speaker}</span>` : ''}
+        <span class="bubble-meta">${escapeHtml(b.gender || 'unknown')} · ${b.x},${b.y} · ${b.width}×${b.height}</span>
+        <button type="button" class="bubble-delete-btn" data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
+      </div>
+      <div class="bubble-text">
+        <div class="original">${escapeHtml(b.text) || t("no_ocr")}</div>
+        <textarea data-idx="${b.idx}" data-field="translation">${escapeHtml(b.translation || '')}</textarea>
+      </div>
+      <div class="bubble-toolbar">
         <span class="font-select-anchor"></span>
-        <label data-i18n="editor_size">Size:</label>
-        <input type="number" class="bubble-size" data-idx="${b.idx}" data-field="font_size"
-               placeholder="auto" min="6" max="120" value="${sizeVal}">
-        <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
-          <label data-i18n="editor_color" style="margin:0;white-space:nowrap;">Color:</label>
-          <input type="color" data-idx="${b.idx}" data-field="text_color" value="${colorVal}"
-                 title="${t('editor_color')}">
+        <div class="size-field${hasManualSize ? '' : ' is-auto'}" title="${t('editor_size')}">
+          <input type="number" class="bubble-size" data-idx="${b.idx}" data-field="font_size"
+                 data-auto="${autoSize}" placeholder="${t('size_auto_short')}" min="2" max="512" value="${sizeVal}">
+          <button type="button" class="size-tag" title="${hasManualSize ? t('size_reset_auto') : t('size_auto_hint')}">${hasManualSize ? t('size_manual') : t('size_auto')}</button>
         </div>
       </div>
-      <div class="bubble-style-row2">
-        <div class="bubble-style-row2a">
+      <div class="bubble-toolbar bubble-toolbar-tight">
+        <span class="seg">
           <button type="button" class="style-toggle bold-btn${isBold?' active':''}"
                   data-idx="${b.idx}" data-field="bold" title="Bold">B</button>
           <button type="button" class="style-toggle italic-btn${isItalic?' active':''}"
                   data-idx="${b.idx}" data-field="italic" title="Italic">I</button>
           <button type="button" class="style-toggle underline-btn${isUnderline?' active':''}"
                   data-idx="${b.idx}" data-field="underline" title="Underline">U</button>
-          <span class="style-sep">│</span>
+        </span>
+        <span class="seg">
           <button type="button" class="style-toggle align-btn${align==='left'?' active':''}"
-                  data-idx="${b.idx}" data-field="text_align" data-value="left" title="Align left">⬅</button>
+                  data-idx="${b.idx}" data-field="text_align" data-value="left" title="Align left">⇤</button>
           <button type="button" class="style-toggle align-btn${align==='center'?' active':''}"
                   data-idx="${b.idx}" data-field="text_align" data-value="center" title="Align center">≡</button>
           <button type="button" class="style-toggle align-btn${align==='right'?' active':''}"
-                  data-idx="${b.idx}" data-field="text_align" data-value="right" title="Align right">➡</button>
-        </div>
-        <div class="bubble-style-row2b">
-          <label style="color:#888;font-size:11px;">${t('editor_outline')}</label>
-          <input type="color" data-idx="${b.idx}" data-field="outline_color"
-                 value="${outlineColorVal}" title="Outline color">
-          <input type="number" class="outline-width-input" data-idx="${b.idx}" data-field="outline_width"
-                 min="0" max="10" value="${outlineWidthVal}" title="Outline width (px)">
-          <span class="style-sep">│</span>
-          <label style="color:#888;font-size:11px;">${t('editor_angle')}</label>
-          <input type="number" class="outline-width-input" data-idx="${b.idx}" data-field="text_angle"
-                 min="-180" max="180" step="1" value="${Math.round(b.text_angle || 0)}"
-                 title="Угол поворота текста (°)" style="width:52px;">
-          <label style="color:#666;font-size:11px;">°</label>
-        </div>
+                  data-idx="${b.idx}" data-field="text_align" data-value="right" title="Align right">⇥</button>
+        </span>
       </div>
-      <div class="bubble-style-box">
-        <label>Cx:</label>
-        <input type="number" data-idx="${b.idx}" data-field="box_cx" value="${Math.round(b.x + b.width/2)}" step="1" title="Центр X (пикс.)">
-        <label>Cy:</label>
-        <input type="number" data-idx="${b.idx}" data-field="box_cy" value="${Math.round(b.y + b.height/2)}" step="1" title="Центр Y (пикс.)">
-        <label>Sw:</label>
-        <input type="number" data-idx="${b.idx}" data-field="box_sw"
-               value="${(b.width / (b.source_box?.[2] || b.width)).toFixed(2)}"
-               data-orig-w="${b.source_box?.[2] || b.width}" min="0.05" step="0.05" title="Масштаб по ширине (1.0 = оригинал)">
-        <label>Sh:</label>
-        <input type="number" data-idx="${b.idx}" data-field="box_sh"
-               value="${(b.height / (b.source_box?.[3] || b.height)).toFixed(2)}"
-               data-orig-h="${b.source_box?.[3] || b.height}" min="0.05" step="0.05" title="Масштаб по высоте (1.0 = оригинал)">
+      <div class="bubble-props">
+        <label class="bubble-prop">
+          <span class="prop-label">${t('editor_text_color')}</span>
+          <input type="color" class="prop-swatch" data-idx="${b.idx}" data-field="text_color" value="${colorVal}">
+          <span class="prop-hex">${colorVal}</span>
+        </label>
+        <div class="bubble-prop">
+          <span class="prop-label">${t('editor_outline')}</span>
+          <input type="color" class="prop-swatch" data-idx="${b.idx}" data-field="outline_color"
+                 value="${outlineColorVal}" title="${t('editor_outline_color')}">
+          <input type="number" data-idx="${b.idx}" data-field="outline_width"
+                 min="0" max="32" value="${outlineWidthVal}" title="${t('editor_outline_width')}">
+          <span class="prop-unit">px</span>
+        </div>
+        <div class="bubble-prop bubble-box">
+          <span class="prop-label">${t('editor_center_x')}</span>
+          <input type="number" data-idx="${b.idx}" data-field="box_cx" value="${Math.round(b.x + b.width/2)}" step="1">
+          <span class="prop-unit">px</span>
+        </div>
+        <div class="bubble-prop bubble-box">
+          <span class="prop-label">${t('editor_center_y')}</span>
+          <input type="number" data-idx="${b.idx}" data-field="box_cy" value="${Math.round(b.y + b.height/2)}" step="1">
+          <span class="prop-unit">px</span>
+        </div>
+        <div class="bubble-prop bubble-box">
+          <span class="prop-label">${t('editor_scale_w')}</span>
+          <input type="number" data-idx="${b.idx}" data-field="box_sw"
+                 value="${(b.width / (b.source_box?.[2] || b.width)).toFixed(2)}"
+                 data-orig-w="${b.source_box?.[2] || b.width}" min="0.05" step="0.05" title="${t('editor_scale_hint')}">
+          <span class="prop-unit">×</span>
+        </div>
+        <div class="bubble-prop bubble-box">
+          <span class="prop-label">${t('editor_scale_h')}</span>
+          <input type="number" data-idx="${b.idx}" data-field="box_sh"
+                 value="${(b.height / (b.source_box?.[3] || b.height)).toFixed(2)}"
+                 data-orig-h="${b.source_box?.[3] || b.height}" min="0.05" step="0.05" title="${t('editor_scale_hint')}">
+          <span class="prop-unit">×</span>
+        </div>
+        <div class="bubble-prop">
+          <span class="prop-label">${t('editor_angle')}</span>
+          <input type="number" data-idx="${b.idx}" data-field="text_angle"
+                 min="-180" max="180" step="1" value="${Math.round(b.text_angle || 0)}">
+          <span class="prop-unit">°</span>
+        </div>
+        <div class="bubble-prop"></div>
       </div>
     `;
     // Вставляем font-select вместо placeholder
     item.querySelector('.font-select-anchor').replaceWith(makeFontSelect(b));
 
     side.appendChild(item);
+    initSizeField(item.querySelector('.size-field'));
+    item.querySelectorAll('input[type="color"]').forEach(inp => {
+      const hex = inp.parentElement.querySelector('.prop-hex');
+      if (hex) inp.addEventListener('input', () => { hex.textContent = inp.value; });
+    });
 
     // Click on bubble item → highlight on image
     item.addEventListener('click', e => {
@@ -806,7 +853,7 @@ function openEditPage(pageNum) {
     });
 
     // Box inputs: focus → select; input → live overlay update
-    item.querySelectorAll('.bubble-style-box input').forEach(inp => {
+    item.querySelectorAll('.bubble-box input').forEach(inp => {
       inp.addEventListener('focus', () => selectBubble(item, b));
       inp.addEventListener('input', () => {
         if (item.classList.contains('selected')) refreshOverlay(b.idx);
@@ -843,6 +890,47 @@ function openEditPage(pageNum) {
   });
 
   applyI18n();
+}
+
+function setSizeFieldAuto(field) {
+  const input = field.querySelector('input');
+  const tag = field.querySelector('.size-tag');
+  field.classList.add('is-auto');
+  input.value = input.dataset.auto || '';
+  tag.textContent = t('size_auto');
+  tag.title = t('size_auto_hint');
+}
+
+function setSizeFieldManual(field) {
+  const tag = field.querySelector('.size-tag');
+  field.classList.remove('is-auto');
+  tag.textContent = t('size_manual');
+  tag.title = t('size_reset_auto');
+}
+
+function initSizeField(field) {
+  const input = field.querySelector('input');
+  input.addEventListener('input', () => {
+    if (input.value.trim() === '') {
+      setSizeFieldAuto(field);
+      input.select();
+    } else {
+      setSizeFieldManual(field);
+    }
+  });
+  field.querySelector('.size-tag').addEventListener('click', () => {
+    if (!field.classList.contains('is-auto')) setSizeFieldAuto(field);
+    input.focus();
+  });
+}
+
+function refreshAutoSizes(bubbles) {
+  bubbles.forEach(b => {
+    const input = document.querySelector(`#editor-side .bubble-size[data-idx="${b.idx}"]`);
+    if (!input) return;
+    input.dataset.auto = b.rendered_font_size || '';
+    if (input.closest('.size-field').classList.contains('is-auto')) input.value = input.dataset.auto;
+  });
 }
 
 function refreshOverlay(idx) {
@@ -1222,7 +1310,8 @@ $('btn-rerender').onclick = async () => {
     if (!field) return;
     if (field === 'font_size') {
       const v = el.value.trim();
-      byIdx[idx][field] = v === '' ? null : parseInt(v);
+      const isAuto = el.closest('.size-field')?.classList.contains('is-auto');
+      byIdx[idx][field] = isAuto || v === '' ? null : parseInt(v);
     } else if (field === 'font_path') {
       byIdx[idx][field] = el.value.trim() || null;
     } else if (field === 'bold' || field === 'italic' || field === 'underline') {
@@ -1265,6 +1354,7 @@ $('btn-rerender').onclick = async () => {
     if (!r.ok) throw new Error('render failed');
     const data = await r.json();
     currentEditPage.bubbles = data.bubbles;
+    refreshAutoSizes(data.bubbles);
     $('editor-image').innerHTML =
       `<img src="${data.url}?t=${Date.now()}" alt="Page" id="editor-img-main">` +
       `<div class="bubble-select-overlay" id="bubble-select-overlay"></div>`;

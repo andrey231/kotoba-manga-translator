@@ -732,7 +732,7 @@ def _render_text_block(
     outline_color: tuple | None = None,
     outline_width: int = 0,
     max_size: int | None = None,
-) -> Image.Image:
+) -> tuple[Image.Image, int | None]:
     img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
@@ -799,7 +799,7 @@ def _render_text_block(
 
         text_y += line_heights[j] + spacing
 
-    return img
+    return img, getattr(font, "size", None)
 
 
 def _fit_at_exact_size(
@@ -883,38 +883,42 @@ def _extract_bubble_style(b: dict) -> dict:
 
 def _render_bubble_block(
     translation: str, color: tuple, style: dict, box: tuple, eff: tuple, text_angle: float
-) -> Image.Image:
+) -> tuple[Image.Image, int | None]:
     bx, by, bw, bh = box
     ex, ey, ew, eh = eff
     off_x, off_y = ex - bx, ey - by
 
     if abs(text_angle) > VERTICAL_TEXT_ANGLE:
         rot_deg = -90 if text_angle > 0 else 90
-        block = _render_text_block(translation, bh, bw, color, **style)
+        block, size = _render_text_block(translation, bh, bw, color, **style)
         block = block.rotate(rot_deg, expand=True, resample=Image.Resampling.BICUBIC)
         bw_r, bh_r = block.size
         cx_r = max(0, (bw_r - bw) // 2)
         cy_r = max(0, (bh_r - bh) // 2)
-        return block.crop((cx_r + off_x, cy_r + off_y, cx_r + off_x + ew, cy_r + off_y + eh))
+        return block.crop((cx_r + off_x, cy_r + off_y, cx_r + off_x + ew, cy_r + off_y + eh)), size
 
     if abs(text_angle) > 1:
         ss = ROTATE_SUPERSAMPLE
         ss_style = dict(style)
         if ss_style.get("max_size"):
             ss_style["max_size"] = ss_style["max_size"] * ss
-        big = _render_text_block(translation, bw * ss, bh * ss, color, **ss_style)
+        if ss_style.get("font_size_override"):
+            ss_style["font_size_override"] = int(ss_style["font_size_override"]) * ss
+        big, size = _render_text_block(translation, bw * ss, bh * ss, color, **ss_style)
         big = big.rotate(-text_angle, expand=True, resample=Image.Resampling.BICUBIC)
         bw_big, bh_big = big.size
         cx = max(0, (bw_big - bw * ss) // 2)
         cy = max(0, (bh_big - bh * ss) // 2)
         big = big.crop((cx, cy, cx + bw * ss, cy + bh * ss))
         block_full = big.resize((bw, bh), Image.Resampling.LANCZOS)
-        return block_full.crop((off_x, off_y, off_x + ew, off_y + eh))
+        return block_full.crop((off_x, off_y, off_x + ew, off_y + eh)), (
+            round(size / ss) if size else None
+        )
 
-    block = _render_text_block(translation, bw, bh, color, **style)
+    block, size = _render_text_block(translation, bw, bh, color, **style)
     if off_x or off_y or ew != bw or eh != bh:
         block = block.crop((off_x, off_y, off_x + ew, off_y + eh))
-    return block
+    return block, size
 
 
 def _draw_debug_overlay(pil: Image.Image, bubbles: list[dict]) -> None:
@@ -962,6 +966,7 @@ def draw_results(
         reverse=True,
     )
     for i, b in enumerate(render_order):
+        b.pop("rendered_font_size", None)
         translation = b.get("translation", "")
         if not translation:
             continue
@@ -980,7 +985,7 @@ def draw_results(
             )
             text_angle = 0.0
 
-        block = _render_bubble_block(
+        block, rendered_size = _render_bubble_block(
             translation,
             color,
             _extract_bubble_style(b),
@@ -989,6 +994,8 @@ def draw_results(
             text_angle,
         )
         pil.paste(block, (ex, ey), block)
+        if rendered_size:
+            b["rendered_font_size"] = int(rendered_size)
 
     if debug:
         _draw_debug_overlay(pil, bubbles)
