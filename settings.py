@@ -4,6 +4,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from urllib.parse import urlsplit, urlunsplit
 
+INPAINT_LAMA = "lama"
+INPAINT_FLUX = "flux"
+INPAINT_METHODS = (INPAINT_LAMA, INPAINT_FLUX)
+
 
 def ollama_endpoint(value: str) -> str:
     value = value.strip().rstrip("/")
@@ -30,6 +34,8 @@ class Settings:
     min_bubble_area: int = 400
     max_font_size: int = 90
     inpaint_shrink: int = 1
+    inpaint_method: str = INPAINT_FLUX
+    unload_models_fully: bool = False
     chunk_size: int = 5
     translate_retries: int = 3
     llm_debug: bool = False
@@ -46,6 +52,10 @@ class Settings:
                 raise ValueError(f"{name} must be a positive integer")
         if type(self.inpaint_shrink) is not int or self.inpaint_shrink < 0:
             raise ValueError("inpaint_shrink must be a non-negative integer")
+        if type(self.unload_models_fully) is not bool:
+            raise ValueError("unload_models_fully must be a boolean")
+        if self.inpaint_method not in INPAINT_METHODS:
+            raise ValueError(f"inpaint_method must be one of {', '.join(INPAINT_METHODS)}")
 
 
 _SETTINGS = ContextVar("translation_settings", default=Settings())

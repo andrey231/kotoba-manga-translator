@@ -1,3 +1,4 @@
+import gc
 import logging
 import os
 import sys
@@ -12,6 +13,7 @@ from PIL import Image
 from transformers import AutoImageProcessor, RTDetrV2ForObjectDetection
 
 from image_io import clip_box
+from settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,50 @@ _detector_processor = None
 _detector_model = None
 
 
+FLUX_MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
+FLUX_PROMPT = "Remove all text and lettering. Keep the artwork, lines and tones unchanged."
+
+
+_flux_pipeline = None
+
+
+_flux_prompt_embeds = None
+
+
+_flux_loaded = False
+
+
+def _load_flux_pipeline():
+    from diffusers import Flux2KleinPipeline
+
+    pipeline = Flux2KleinPipeline.from_pretrained(FLUX_MODEL_ID, torch_dtype=torch.bfloat16)
+    pipeline.text_encoder.to(DEVICE)
+    with torch.no_grad():
+        embeds, _ = pipeline.encode_prompt(FLUX_PROMPT, device=DEVICE)
+    pipeline.text_encoder = None
+    torch.cuda.empty_cache()
+    return pipeline, embeds.to("cpu")
+
+
+@_locked
+def get_flux_inpainter():
+    global _flux_pipeline, _flux_prompt_embeds, _flux_loaded
+    if DEVICE != "cuda":
+        return None, None
+    if not _flux_loaded:
+        _flux_loaded = True
+        try:
+            _flux_pipeline, _flux_prompt_embeds = _load_flux_pipeline()
+        except Exception as error:
+            logger.warning(f"[flux] FLUX.2 Klein unavailable, using LaMa: {error}")
+            _flux_pipeline = None
+    if _flux_pipeline is None:
+        return None, None
+    _flux_pipeline.transformer.to(DEVICE)
+    _flux_pipeline.vae.to(DEVICE)
+    return _flux_pipeline, _flux_prompt_embeds
+
+
 @_locked
 def get_inpaint_model():
     global _inpaint_model, _inpaint_loaded
@@ -135,10 +181,27 @@ def get_ocr_model():
     return _ocr_processor, _ocr_model, _ocr_tokenizer
 
 
-@_locked
-def release_gpu_memory():
+def _unload_all_models() -> None:
+    global _detector_processor, _detector_model, _ocr_processor, _ocr_model, _ocr_tokenizer
+    global _inpaint_model, _inpaint_loaded, _flux_pipeline, _flux_prompt_embeds, _flux_loaded
     global _ctd_session
-    if DEVICE != "cuda":
+    _detector_processor = _detector_model = None
+    _ocr_processor = _ocr_model = _ocr_tokenizer = None
+    _inpaint_model = None
+    _inpaint_loaded = False
+    _flux_pipeline = _flux_prompt_embeds = None
+    _flux_loaded = False
+    _ctd_session = None
+    gc.collect()
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
+
+
+@_locked
+def release_gpu_memory(full: bool | None = None):
+    global _ctd_session
+    full = settings().unload_models_fully if full is None else full
+    if DEVICE != "cuda" and not full:
         return
     if _ocr_model is not None:
         decoder = getattr(_ocr_model, "decoder", None)
@@ -150,9 +213,15 @@ def release_gpu_memory():
             cached = getattr(module, name, None)
             if cached is not None and hasattr(cached, "cache_clear"):
                 cached.cache_clear()
+    if full:
+        _unload_all_models()
+        return
     for model in (_detector_model, _ocr_model, _inpaint_model):
         if model is not None:
             model.to("cpu")
+    if _flux_pipeline is not None:
+        _flux_pipeline.transformer.to("cpu")
+        _flux_pipeline.vae.to("cpu")
     _ctd_session = None
     torch.cuda.empty_cache()
 

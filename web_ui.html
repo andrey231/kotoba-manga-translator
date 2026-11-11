@@ -258,6 +258,29 @@
           <input type="number" id="sett-inpaint-shrink" min="0" max="20" step="1" value="1">
         </div>
       </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_inpaint_method">Restoring art under text</span>
+          <div class="setting-desc" data-i18n="sett_inpaint_method_desc">FLUX.2 Klein (default) redraws artwork under text much better but needs about 12 GB of VRAM, an NVIDIA GPU and a one-time 16 GB download; without them Kotoba falls back to LaMa. LaMa is fast and light. Plain bubbles are always filled with paper colour.</div>
+        </div>
+        <div class="setting-control">
+          <select id="sett-inpaint-method">
+            <option value="flux" selected>FLUX.2 Klein 4B</option>
+            <option value="lama">LaMa</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <span class="setting-label" data-i18n="sett_unload_models">Fully unload models between passes</span>
+          <div class="setting-desc" data-i18n="sett_unload_models_desc">Remove detection, OCR, CTD, LaMa and FLUX from both VRAM and RAM at every pass boundary and after each editor action, instead of parking them in RAM. Frees about 10 GB of RAM but every model is read from disk again on next use (FLUX alone takes several seconds). The Ollama model is always unloaded fully.</div>
+        </div>
+        <div class="setting-checkbox-ctrl">
+          <input type="checkbox" id="sett-unload-models">
+        </div>
+      </div>
     </div>
 
     <!-- Translation -->

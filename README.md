@@ -62,12 +62,14 @@ Everything runs **locally** on your machine via [Ollama](https://ollama.com). No
 ## Pipeline
 
 ```
-All pages: bubble detection (RT-DETRv2) → OCR (Hayai OCR v2.5 Nova)
+All pages: bubble and text detection (RT-DETRv2 + recovery of missed lettering) → OCR (Hayai OCR v2.5 Nova)
 All pages: page analysis → speaker attribution → translation (Ollama vision model)
-All pages: text masks → inpainting (anime-big-lama) → translated text rendering
+All pages: text masks → paper fill for plain bubbles → art restoration (FLUX.2 Klein 4B or LaMa) → rendering
 ```
 
-The local detection and OCR models finish their pass before the selected Ollama model is loaded for the chapter. The Ollama model is unloaded before GPU inpainting starts. This avoids switching large models between pages. **Fast mode** skips page analysis and speaker attribution for a quicker draft; translation then has less context.
+The local detection and OCR models finish their pass before the selected Ollama model is loaded for the chapter. The Ollama model is unloaded before GPU inpainting starts. This avoids switching large models between pages. Settings can also unload the local models fully (from VRAM and RAM) between passes.
+
+Text is attached to its speech bubble, and the translation is fitted into the bubble's interior. Plain bubbles are cleaned by filling them with their paper colour; only text drawn over artwork goes to the inpainting model. Pages are read panel by panel in the direction of the source script (right to left for Japanese). Lettering the detector misses is recovered from the text mask and kept only if OCR reads it. Short kana outside bubbles is treated as a sound effect and translated as one (ぬっ → «НАВИС»), not as speech. **Fast mode** skips page analysis and speaker attribution for a quicker draft; translation then has less context.
 
 ## Code structure
 
@@ -95,6 +97,7 @@ python manga_translator.py input --output-dir results --llm-model YOUR_MODEL --t
   The web UI checks Ollama's reported model capabilities when listing installed models. Hayai OCR and its SigLIP2 image processor download from Hugging Face when first needed; no Ollama OCR model is needed.
 - **Disk space** for the portable Python environment, Hugging Face weights and your chosen Ollama model; large vision models can require tens of gigabytes
 - **GPU recommended** — works on CPU but each page takes much longer. NVIDIA cards use CUDA automatically.
+- **Art restoration** uses FLUX.2 Klein 4B by default: about 12 GB of VRAM at peak and a one-time 16 GB download. Without an NVIDIA GPU, or if FLUX fails, Kotoba uses LaMa (about 2 GB). You can pick LaMa in Settings.
 
 ## Quick start (Windows — fully portable)
 
@@ -159,13 +162,13 @@ User preferences (language, model, font, debug toggles) are stored in your brows
 
 The character archive is **`characters.json`** in the project root. You can edit or delete it freely. Deleting it starts a fresh archive.
 
-Model weights cache to `~/.cache/huggingface/hub/` (anime-big-lama, RT-DETRv2, Hayai OCR, comic-text-detector) — Ollama models live wherever you configured Ollama to store them.
+Model weights cache to `~/.cache/huggingface/hub/` (FLUX.2 Klein 4B, anime-big-lama, RT-DETRv2, Hayai OCR, comic-text-detector) — Ollama models live wherever you configured Ollama to store them.
 
 ## Privacy
 
 Kotoba never sends your images, text, or anything else off your machine. The only network requests are:
 
-- **Setup and first model use:** downloads of portable Python, dependencies, and model weights (LaMa, RT-DETRv2, Hayai OCR, comic-text-detector) from python.org, PyPI, and Hugging Face.
+- **Setup and first model use:** downloads of portable Python, dependencies, and model weights (FLUX.2 Klein 4B, LaMa, RT-DETRv2, Hayai OCR, comic-text-detector) from python.org, PyPI, and Hugging Face.
 - **Each translation:** HTTP to the configured Ollama endpoint, local at `127.0.0.1:11434` by default.
 
 After dependencies, model weights and the Ollama model have been downloaded, the default local setup can run offline.
@@ -184,7 +187,7 @@ Each translation batch sees nearby dialogue from the current page, even when it 
 
 ## Known limitations
 
-- **Sound effects outside speech bubbles** use the detector's `text_free` class and a separate confidence threshold. Highly stylized lettering can still be missed or recognized incorrectly.
+- **Sound effects** are detected and translated, but they are rendered in the regular font; heavily stylized lettering can still be misread by OCR.
 - **Abliterated Ollama models** (`huihui_ai/gemma-4-abliterated`, etc.) often have broken vision or template tags and return empty responses unpredictably. Use the regular `gemma3:27b` or `gemma4:26b` instead.
 - **Very stylized fonts in the original page** can confuse OCR. Re-OCR with a smaller crop often helps; the editor lets you fix any bubble manually.
 - **Vertical Japanese text** is supported by Hayai OCR, though illustrated or overlapping regions may still need manual correction.
@@ -203,6 +206,7 @@ Kotoba stands on the shoulders of several excellent open-source projects:
 
 - [RT-DETRv2](https://github.com/lyuwenyu/RT-DETR) — bubble detection
 - [ogkalu2/comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) — finetuned RT-DETRv2 weights for comic panels
+- [FLUX.2 [klein] 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — art restoration under text (Apache-2.0, via diffusers)
 - [anime-big-lama](https://huggingface.co/df1412/anime-big-lama) — manga-finetuned LaMa inpainting
 - [comic-text-detector](https://huggingface.co/mayocream/comic-text-detector-onnx) — pixel-level text segmentation for masks
 - [Hayai OCR v2.5 Nova](https://huggingface.co/JustANormalTinkerer/hayai-ocr-v2.5-nova) — OCR (via transformers, custom model code)

@@ -10,6 +10,7 @@ numpy>=1.26
 # Глубокое обучение
 transformers>=5.0           # RT-DETRv2 (детекция баблов) + Hayai OCR (custom model)
 huggingface_hub>=0.24       # скачивание anime-big-lama
+diffusers>=0.42             # FLUX.2 Klein 4B для восстановления рисунка (по выбору в настройках)
 # Сегментация текста — Comic Text Detector (ONNX, специализирован для манги)
 # Веса (~30 MB) скачиваются с HuggingFace при первом запуске автоматически.
 # CUDA-сборка onnxruntime ДОЛЖНА совпадать с CUDA-мажором torch (cu128 = CUDA 12).

@@ -1,15 +1,19 @@
 import logging
+import math
 import os
+import re
 
 import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from bubbles import source_box
+from bubbles import text_box
+from flux_inpaint import inpaint_with_flux
 from image_io import clip_box, write_image
 from models import DEVICE, _ctd_page_mask, get_inpaint_model
-from settings import settings
+from page_layout import bubble_interior
+from settings import INPAINT_FLUX, settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,8 @@ VERTICAL_TEXT_ANGLE = 45
 
 
 ROTATE_SUPERSAMPLE = 2
+MIN_ROTATED_AREA_FRAC = 0.45
+ROTATION_FALLBACK_SCALES = (1.0, 0.75, 0.5, 0.25)
 
 
 MIN_FONT_SIZE = 2
@@ -47,6 +53,29 @@ OUTLINE_DELTA = 60
 
 
 OUTLINE_BLEND_MARGIN = 30
+
+PLAIN_BACKGROUND_FRAC = 0.6
+PLAIN_BACKGROUND_LEVEL = 200
+PLAIN_MAX_DARK_FRAC = 0.08
+ART_GLYPH_DILATE = 5
+GHOST_DELTA = 8
+GHOST_DILATE = 3
+TEXT_FILL_PAD = 8
+TEXT_FILL_PAPER_FRAC = 0.5
+TEXT_FILL_PAPER_DELTA = 40
+TEXT_FILL_MAX_STD = 18.0
+TEXT_FILL_MIN_LEVEL = 150
+TEXT_FILL_MAX_INK = 0.35
+TEXT_FILL_MAX_ART = 0.05
+TEXT_FILL_MASK_FRAC = 0.5
+BUSY_BACKGROUND_STD = 40.0
+DARK_BACKGROUND_LEVEL = 100
+AUTO_OUTLINE_RATIO = 0.1
+AUTO_OUTLINE_MIN = 2
+MIN_SIZED_LETTERS = 2
+
+ELLIPSIS = "…"
+_ELLIPSIS_RE = re.compile(r"(?:\.{3,}|…+|‥+)")
 
 
 def _largest_subrect(
@@ -210,7 +239,7 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict], page_name: str 
     _dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
     for b in active:
-        x, y, bw, bh = source_box(b)
+        x, y, bw, bh = text_box(b)
         x, y, x2, y2 = clip_box(x, y, bw, bh, w_img, h_img)
         if x2 <= x or y2 <= y:
             b["_text_mask"] = None
@@ -227,7 +256,8 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict], page_name: str 
         b["_text_mask"] = combined
 
         b.setdefault("text_angle", _estimate_text_angle(combined))
-        b["_text_size"] = _estimate_text_size(combined)
+        letters = sum(ch.isalnum() for ch in b.get("text", ""))
+        b["_text_size"] = _estimate_text_size(combined) if letters >= MIN_SIZED_LETTERS else None
 
         if settings().mask_debug_dir:
             idx = b.get("idx", id(b))
@@ -242,7 +272,7 @@ def _compute_text_masks(img_cv: np.ndarray, bubbles: list[dict], page_name: str 
 
 def detect_text_color(img_cv: np.ndarray, bubble: dict, default: tuple = (0, 0, 0)) -> tuple:
     ih, iw = img_cv.shape[:2]
-    x, y, x2, y2 = clip_box(*source_box(bubble), iw, ih)
+    x, y, x2, y2 = clip_box(*text_box(bubble), iw, ih)
     w, h = x2 - x, y2 - y
     if w <= 0 or h <= 0:
         return default
@@ -300,7 +330,7 @@ def detect_text_color(img_cv: np.ndarray, bubble: dict, default: tuple = (0, 0, 
 def detect_text_style(img_cv: np.ndarray, bubble: dict) -> tuple:
     fill = detect_text_color(img_cv, bubble)
     ih, iw = img_cv.shape[:2]
-    x, y, x2, y2 = clip_box(*source_box(bubble), iw, ih)
+    x, y, x2, y2 = clip_box(*text_box(bubble), iw, ih)
     mask_full = bubble.get("_text_mask")
     if mask_full is None or x2 <= x or y2 <= y:
         return fill, None, 0
@@ -360,7 +390,7 @@ def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict], shrink: int = 1)
     for b in bubbles:
         if not b.get("translation"):
             continue
-        x, y, bw, bh = source_box(b)
+        x, y, bw, bh = text_box(b)
         x0 = max(0, x + shrink)
         y0 = max(0, y + shrink)
         x1 = min(w, x + bw - shrink)
@@ -374,6 +404,19 @@ def build_inpaint_mask(img_cv: np.ndarray, bubbles: list[dict], shrink: int = 1)
             coverage = np.count_nonzero(crop_m) / max(crop_m.size, 1)
             if coverage >= CTD_MIN_COVERAGE and crop_m.any():
                 closed = cv2.morphologyEx(crop_m, cv2.MORPH_CLOSE, closing_k)
+                outside_text = img_gray[y0:y1, x0:x1][crop_m == 0]
+                plain = (
+                    outside_text.size > 0
+                    and np.mean(outside_text >= PLAIN_BACKGROUND_LEVEL) >= PLAIN_BACKGROUND_FRAC
+                    and np.mean(outside_text < DARK_BACKGROUND_LEVEL) <= PLAIN_MAX_DARK_FRAC
+                )
+                if not plain:
+                    art_k = cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE, (ART_GLYPH_DILATE, ART_GLYPH_DILATE)
+                    )
+                    glyph = cv2.dilate(crop_m, art_k)
+                    mask[y0:y1, x0:x1] = np.maximum(mask[y0:y1, x0:x1], glyph)
+                    continue
                 glyph = cv2.dilate(closed, inpaint_k)
 
                 rows_with_text = np.any(crop_m > 0, axis=1)
@@ -426,11 +469,105 @@ def _pad_to_multiple_of_8(img_np: np.ndarray) -> tuple[np.ndarray, tuple]:
     return padded, (h, w)
 
 
+def _fill_ink(
+    out: np.ndarray,
+    region: np.ndarray,
+    origin: tuple[int, int],
+    color: tuple,
+    mask: np.ndarray,
+    whole: bool = False,
+) -> None:
+    ox, oy = origin
+    h, w = region.shape
+    patch = out[oy : oy + h, ox : ox + w]
+    if whole:
+        target = region
+    else:
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        level = float(np.mean(color))
+        ink = ((gray < level - GHOST_DELTA) & (region > 0)).astype(np.uint8) * 255
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * GHOST_DILATE + 1, 2 * GHOST_DILATE + 1)
+        )
+        target = cv2.bitwise_and(cv2.dilate(ink, kernel), region)
+    patch[target > 0] = color
+    mask[oy : oy + h, ox : ox + w][region > 0] = 0
+
+
+def _plain_text_region(img_cv: np.ndarray, box: tuple, text_mask: np.ndarray) -> tuple | None:
+    ih, iw = img_cv.shape[:2]
+    x, y, bw, bh = box
+    x0, y0 = max(0, x - TEXT_FILL_PAD), max(0, y - TEXT_FILL_PAD)
+    x1, y1 = min(iw, x + bw + TEXT_FILL_PAD), min(ih, y + bh + TEXT_FILL_PAD)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    crop = img_cv[y0:y1, x0:x1]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    level = float(np.percentile(gray, 90))
+    if level < TEXT_FILL_MIN_LEVEL:
+        return None
+    paper = gray >= level - TEXT_FILL_PAPER_DELTA
+    if paper.mean() < TEXT_FILL_PAPER_FRAC or float(gray[paper].std()) > TEXT_FILL_MAX_STD:
+        return None
+
+    ink = (~paper).astype(np.uint8) * 255
+    if np.count_nonzero(ink) > TEXT_FILL_MAX_INK * ink.size:
+        return None
+    text_zone = text_mask[y0:y1, x0:x1] > 0
+    if np.count_nonzero((ink > 0) & ~text_zone) > TEXT_FILL_MAX_ART * ink.size:
+        return None
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    covered = np.bincount(labels[text_zone].ravel(), minlength=count)
+    h, w = ink.shape
+    region = np.zeros_like(ink)
+    for i in range(1, count):
+        left, top, cw, ch = stats[i, :4]
+        if left == 0 or top == 0 or left + cw >= w or top + ch >= h:
+            continue
+        if covered[i] < TEXT_FILL_MASK_FRAC * stats[i, cv2.CC_STAT_AREA]:
+            continue
+        region[labels == i] = 255
+    if not region.any():
+        return None
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (4 * GHOST_DILATE + 1, 4 * GHOST_DILATE + 1)
+    )
+    region = cv2.dilate(region, kernel)
+    color = tuple(int(c) for c in np.median(crop[paper], axis=0))
+    return region, (x0, y0), color
+
+
+def clean_plain_backgrounds(
+    img_cv: np.ndarray, bubbles: list[dict], mask: np.ndarray
+) -> np.ndarray:
+    out = img_cv.copy()
+    text_mask = mask.copy()
+    for b in bubbles:
+        if not b.get("translation"):
+            continue
+        box = text_box(b)
+        if b.get("bubble_box"):
+            interior = bubble_interior(img_cv, b["bubble_box"], box)
+            if interior is not None:
+                _fill_ink(out, *interior, mask)
+                continue
+        plain = _plain_text_region(img_cv, box, text_mask)
+        if plain is not None:
+            _fill_ink(out, *plain, mask, whole=True)
+    return out
+
+
 def inpaint_page(img_cv: np.ndarray, bubbles: list[dict]) -> np.ndarray:
     mask_np = build_inpaint_mask(img_cv, bubbles, shrink=settings().inpaint_shrink)
+    img_cv = clean_plain_backgrounds(img_cv, bubbles, mask_np)
 
     if not mask_np.any():
-        return img_cv.copy()
+        return img_cv
+
+    if settings().inpaint_method == INPAINT_FLUX:
+        result = inpaint_with_flux(img_cv, mask_np)
+        if result is not None:
+            return result
 
     model = get_inpaint_model()
     if model is None:
@@ -881,6 +1018,52 @@ def _extract_bubble_style(b: dict) -> dict:
     )
 
 
+def _typeset(text: str) -> str:
+    text = text.replace("。", ".").replace("※", "*")
+    return _ELLIPSIS_RE.sub(ELLIPSIS, text)
+
+
+def _outline_text_over_art(img_cv: np.ndarray, bubbles: list[dict]) -> None:
+    ih, iw = img_cv.shape[:2]
+    for b in bubbles:
+        if not b.get("translation") or b.get("bubble_box") or b.get("outline_color"):
+            continue
+        x, y, x2, y2 = clip_box(b["x"], b["y"], b["width"], b["height"], iw, ih)
+        if x2 <= x or y2 <= y:
+            continue
+        gray = cv2.cvtColor(img_cv[y:y2, x:x2], cv2.COLOR_BGR2GRAY)
+        if gray.std() <= BUSY_BACKGROUND_STD and gray.mean() >= DARK_BACKGROUND_LEVEL:
+            continue
+        fill = b.get("text_color") or (0, 0, 0)
+        b["outline_color"] = [0, 0, 0] if sum(fill) > 384 else [255, 255, 255]
+        size = b.get("_text_size") or min(b["width"], b["height"]) // 6
+        b["outline_width"] = max(AUTO_OUTLINE_MIN, int(round(size * AUTO_OUTLINE_RATIO)))
+
+
+def _rotated_inner_size(w: int, h: int, angle: float) -> tuple[int, int]:
+    sin_a = abs(math.sin(math.radians(angle)))
+    cos_a = abs(math.cos(math.radians(angle)))
+    if sin_a < 1e-6:
+        return w, h
+    long_side, short_side = max(w, h), min(w, h)
+    if short_side <= 2 * sin_a * cos_a * long_side or abs(sin_a - cos_a) < 1e-6:
+        half = short_side / 2
+        inner_w, inner_h = (half / sin_a, half / cos_a) if w >= h else (half / cos_a, half / sin_a)
+    else:
+        cos_2a = cos_a * cos_a - sin_a * sin_a
+        inner_w = (w * cos_a - h * sin_a) / cos_2a
+        inner_h = (h * cos_a - w * sin_a) / cos_2a
+    return max(1, int(inner_w)), max(1, int(inner_h))
+
+
+def _fitting_rotation(w: int, h: int, angle: float) -> tuple[float, int, int]:
+    for scale in ROTATION_FALLBACK_SCALES:
+        inner_w, inner_h = _rotated_inner_size(w, h, angle * scale)
+        if inner_w * inner_h >= MIN_ROTATED_AREA_FRAC * w * h:
+            return angle * scale, inner_w, inner_h
+    return 0.0, w, h
+
+
 def _render_bubble_block(
     translation: str, color: tuple, style: dict, box: tuple, eff: tuple, text_angle: float
 ) -> tuple[Image.Image, int | None]:
@@ -904,13 +1087,14 @@ def _render_bubble_block(
             ss_style["max_size"] = ss_style["max_size"] * ss
         if ss_style.get("font_size_override"):
             ss_style["font_size_override"] = int(ss_style["font_size_override"]) * ss
-        big, size = _render_text_block(translation, bw * ss, bh * ss, color, **ss_style)
-        big = big.rotate(-text_angle, expand=True, resample=Image.Resampling.BICUBIC)
-        bw_big, bh_big = big.size
-        cx = max(0, (bw_big - bw * ss) // 2)
-        cy = max(0, (bh_big - bh * ss) // 2)
-        big = big.crop((cx, cy, cx + bw * ss, cy + bh * ss))
-        block_full = big.resize((bw, bh), Image.Resampling.LANCZOS)
+        angle, inner_w, inner_h = _fitting_rotation(bw * ss, bh * ss, text_angle)
+        big, size = _render_text_block(translation, inner_w, inner_h, color, **ss_style)
+        big = big.rotate(-angle, expand=True, resample=Image.Resampling.BICUBIC)
+        canvas = Image.new("RGBA", (bw * ss, bh * ss), (0, 0, 0, 0))
+        left = (bw * ss - big.width) // 2
+        top = (bh * ss - big.height) // 2
+        canvas.paste(big, (left, top), big)
+        block_full = canvas.resize((bw, bh), Image.Resampling.LANCZOS)
         return block_full.crop((off_x, off_y, off_x + ew, off_y + eh)), (
             round(size / ss) if size else None
         )
@@ -958,6 +1142,7 @@ def draw_results(
                 bubble["outline_width"] = outline_width
     logger.debug("Inpainting original text (LaMa)")
     inpainted = inpaint_page(img_cv, bubbles)
+    _outline_text_over_art(inpainted, bubbles)
     pil = Image.fromarray(cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
     render_order = sorted(
@@ -986,7 +1171,7 @@ def draw_results(
             text_angle = 0.0
 
         block, rendered_size = _render_bubble_block(
-            translation,
+            _typeset(translation),
             color,
             _extract_bubble_style(b),
             (bx, by, bw, bh),

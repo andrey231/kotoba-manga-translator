@@ -15,7 +15,7 @@ from context import CharacterArchive, ErrorLog, MangaContext
 from fonts import resolve_font
 from image_io import SUPPORTED_EXTENSIONS, read_image, write_image
 from llm import model_phase, unload_model
-from models import detect_bubbles, release_gpu_memory
+from models import _ctd_page_mask, detect_bubbles, release_gpu_memory
 from ocr import ocr_region
 from page_analysis import (
     analyze_page_full,
@@ -23,8 +23,20 @@ from page_analysis import (
     detect_character_intro_page,
     extract_character_intros,
 )
+from page_layout import (
+    attach_bubble_boxes,
+    bubble_interior,
+    interior_rect,
+    is_right_to_left,
+    is_verified_text,
+    missed_text_regions,
+    orphan_bubbles,
+    texts_in_bubbles,
+)
+from page_layout import reading_order as layout_reading_order
 from rendering import _clip_overlapping_boxes, draw_results
-from settings import settings, updated_settings, use_settings
+from settings import INPAINT_FLUX, INPAINT_METHODS, settings, updated_settings, use_settings
+from sound_effects import mark_sound_effects
 from text_utils import _infer_emotion_tag, natural_key
 from translation import translate_batch
 
@@ -63,11 +75,55 @@ def _detect_text_bubbles(img_cv: np.ndarray, image_pil: Image.Image) -> list[dic
             logger.debug(f"  [sfx+] text_free @ ({b['x']},{b['y']}) score={b['confidence']:.2f}")
 
     bubbles = _clip_overlapping_boxes(bubbles, min_area=settings().min_bubble_area)
+    texts = [b for b in bubbles if b["class"] in ("text_bubble", "text_free")]
+    shapes = [
+        b
+        for b in detections
+        if b["class"] == "bubble" and b["confidence"] >= settings().detect_threshold
+    ]
+    attach_bubble_boxes(texts, shapes)
+    text_mask = _ctd_page_mask(img_cv)
+    recovered = texts_in_bubbles(orphan_bubbles(texts, shapes), text_mask)
+    recovered = [b for b in recovered if b["width"] * b["height"] >= settings().min_bubble_area]
+    for b in recovered:
+        logger.debug(f"  [bubble+] text recovered @ ({b['x']},{b['y']})")
+    texts.extend(recovered)
+    texts.extend(missed_text_regions(text_mask, texts + shapes))
+
     band = max(READING_BAND_MIN, img_cv.shape[0] // READING_BAND_DIVISOR)
-    return sorted(
-        [b for b in bubbles if b["class"] in ("text_bubble", "text_free")],
-        key=lambda b: reading_order(b, band),
+    return sorted(texts, key=lambda b: reading_order(b, band))
+
+
+def _fit_to_bubbles(img_cv: np.ndarray, text_bubbles: list[dict]) -> None:
+    for b in text_bubbles:
+        if not b.get("bubble_box"):
+            continue
+        box = (b["x"], b["y"], b["width"], b["height"])
+        interior = bubble_interior(img_cv, b["bubble_box"], box)
+        if interior is None:
+            continue
+        mask, origin, _ = interior
+        blockers = [
+            (o["x"], o["y"], o["width"], o["height"])
+            for o in text_bubbles
+            if o is not b and o.get("bubble_box") == b["bubble_box"]
+        ]
+        rect = interior_rect(mask, origin, box, blockers)
+        if rect != box:
+            b["text_box"] = list(box)
+            b["x"], b["y"], b["width"], b["height"] = rect
+
+
+def _layout_page(img_cv: np.ndarray, text_bubbles: list[dict]) -> list[dict]:
+    dialogue = [b for b in text_bubbles if b["class"] == "text_bubble"] or text_bubbles
+    rtl = is_right_to_left(
+        [b.get("text", "") for b in dialogue],
+        [(b["x"], b["y"], b["width"], b["height"]) for b in dialogue],
     )
+    ordered = layout_reading_order(text_bubbles, img_cv, rtl)
+    _fit_to_bubbles(img_cv, ordered)
+    mark_sound_effects(ordered)
+    return ordered
 
 
 def _handle_intro_page(
@@ -100,6 +156,8 @@ def _ocr_bubbles(
             img_cv, b["x"], b["y"], b["width"], b["height"], idx=i + 1, page_idx=page_idx
         )
         b["emotion_hint"] = _infer_emotion_tag(b.get("text", ""))
+        if b.get("_recovered"):
+            continue
         if not b["text"] and errors:
             errors.add(
                 page_idx,
@@ -194,6 +252,8 @@ def _prepare_page(image_path, page_idx, errors, on_stage):
         errors.add(page_idx, "no_bubbles", "No text bubbles found on this page", image=image_path)
     stage("stage_ocr")
     _ocr_bubbles(image, bubbles, page_idx, errors)
+    bubbles = [b for b in bubbles if not b.pop("_recovered", False) or is_verified_text(b["text"])]
+    bubbles = _layout_page(image, bubbles)
     stage("stage_prepared")
     return bubbles
 
@@ -319,6 +379,8 @@ def process_directory(
     min_bubble_area: int | None = None,
     max_font_size: int | None = None,
     inpaint_shrink: int | None = None,
+    inpaint_method: str | None = None,
+    unload_models_fully: bool | None = None,
     chunk_size: int | None = None,
     translate_retries: int | None = None,
     on_page_done=None,
@@ -336,6 +398,8 @@ def process_directory(
         min_bubble_area=min_bubble_area,
         max_font_size=max_font_size,
         inpaint_shrink=inpaint_shrink,
+        inpaint_method=inpaint_method,
+        unload_models_fully=unload_models_fully,
         chunk_size=chunk_size,
         translate_retries=translate_retries,
     )
@@ -553,6 +617,8 @@ if __name__ == "__main__":
     parser.add_argument("--target-lang", default="Russian")
     parser.add_argument("--font-path", default="arial.ttf")
     parser.add_argument("--fast-mode", action="store_true")
+    parser.add_argument("--inpaint-method", choices=INPAINT_METHODS, default=INPAINT_FLUX)
+    parser.add_argument("--unload-models-fully", action="store_true")
     parser.add_argument("--debug", action="store_true")
     arguments = vars(parser.parse_args())
     logging.basicConfig(level=logging.DEBUG if arguments["debug"] else logging.WARNING)

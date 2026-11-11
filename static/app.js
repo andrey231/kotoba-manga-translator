@@ -26,6 +26,10 @@ const I18N = {
     sett_max_font:          "Max font size (px)",
     sett_max_font_desc:     "Upper limit for automatic font size selection. Raising this cap lets text grow larger in big bubbles. Default: 90.",
     sett_inpaint_shrink:    "Inpaint mask shrink (px)",
+    sett_inpaint_method:    "Restoring art under text",
+    sett_inpaint_method_desc:"FLUX.2 Klein (default) redraws artwork under text much better but needs about 12 GB of VRAM, an NVIDIA GPU and a one-time 16 GB download; without them Kotoba falls back to LaMa. LaMa is fast and light. Plain bubbles are always filled with paper colour.",
+    sett_unload_models:     "Fully unload models between passes",
+    sett_unload_models_desc:"Remove detection, OCR, CTD, LaMa and FLUX from both VRAM and RAM at every pass boundary and after each editor action, instead of parking them in RAM. Frees about 10 GB of RAM but every model is read from disk again on next use (FLUX alone takes several seconds). The Ollama model is always unloaded fully.",
     sett_inpaint_shrink_desc:"Pixels to pull the inpainting mask inward from the bubble border. Prevents LaMa from accidentally erasing content outside the bubble edge. Default: 1.",
     sett_chunk_size:        "Bubbles per LLM request",
     sett_chunk_size_desc:   "How many speech bubbles are sent to the LLM in one batch. Larger batches provide more context but make JSON parsing less reliable. Default: 5.",
@@ -96,6 +100,7 @@ const I18N = {
     editor_scale_w:   "Width",
     editor_scale_h:   "Height",
     editor_scale_hint: "Scale relative to the original box (1.0 = original)",
+    editor_sfx_hint:  "Sound effect: translated as a short onomatopoeia, not speech",
     size_auto:        "AUTO",
     size_auto_short:  "—",
     size_manual:      "MANUAL",
@@ -192,6 +197,10 @@ const I18N = {
     sett_max_font:          "Макс. размер шрифта (px)",
     sett_max_font_desc:     "Верхняя граница автоподбора размера шрифта. Увеличение позволяет тексту стать крупнее в больших баблах. Умолчание: 90.",
     sett_inpaint_shrink:    "Отступ маски инпейтинга (px)",
+    sett_inpaint_method:    "Восстановление рисунка под текстом",
+    sett_inpaint_method_desc:"FLUX.2 Klein (по умолчанию) заметно лучше дорисовывает рисунок под текстом, но требует около 12 ГБ видеопамяти, видеокарту NVIDIA и однократной загрузки 16 ГБ; без этого Kotoba переходит на LaMa. LaMa — быстрая и лёгкая. Обычные баблы всегда заливаются цветом бумаги.",
+    sett_unload_models:     "Полностью выгружать модели между проходами",
+    sett_unload_models_desc:"Удалять детектор, OCR, CTD, LaMa и FLUX и из видеопамяти, и из оперативной памяти на каждой границе проходов и после каждого действия в редакторе, а не держать их в RAM. Освобождает около 10 ГБ RAM, но при следующем использовании каждая модель снова читается с диска (один FLUX — несколько секунд). Модель Ollama всегда выгружается полностью.",
     sett_inpaint_shrink_desc:"Пикселей, на которые маска инпейтинга отступает от края bbox. Защищает фон рядом с баблом от случайного стирания. Умолчание: 1.",
     sett_chunk_size:        "Баблов за один LLM-запрос",
     sett_chunk_size_desc:   "Сколько баблов отправляется LLM в одном батче. Больше → больше контекста, но JSON менее надёжен. Умолчание: 5.",
@@ -262,6 +271,7 @@ const I18N = {
     editor_scale_w:   "Ширина",
     editor_scale_h:   "Высота",
     editor_scale_hint: "Масштаб относительно исходной области (1.0 = оригинал)",
+    editor_sfx_hint:  "Звуковой эффект: переводится коротким звукоподражанием, а не репликой",
     size_auto:        "АВТО",
     size_auto_short:  "—",
     size_manual:      "ВРУЧНУЮ",
@@ -481,6 +491,8 @@ async function startUpload(files) {
   form.append('min_bubble_area',  sett.min_bubble_area);
   form.append('max_font_size',    sett.max_font_size);
   form.append('inpaint_shrink',   sett.inpaint_shrink);
+  form.append('inpaint_method',   sett.inpaint_method);
+  form.append('unload_models_fully', sett.unload_models ? 'true' : 'false');
   form.append('chunk_size',       sett.chunk_size);
   form.append('translate_retries',sett.translate_retries);
 
@@ -1005,6 +1017,7 @@ function openEditPage(pageNum) {
     item.innerHTML = `
       <div class="bubble-head">
         <span class="bubble-badge">#${b.idx}</span>
+        ${b.kind === 'sfx' ? `<span class="bubble-kind" title="${t('editor_sfx_hint')}">SFX</span>` : ''}
         ${speaker ? `<span class="bubble-speaker">${speaker}</span>` : ''}
         <span class="bubble-meta">${escapeHtml(b.gender || 'unknown')} · ${b.x},${b.y} · ${b.width}×${b.height}</span>
         <button type="button" class="bubble-delete-btn" data-delete-idx="${b.idx}" title="${t('editor_delete_bubble')}">✕</button>
@@ -1768,6 +1781,8 @@ const SETTINGS_DEFAULTS = {
   min_bubble_area:   400,
   max_font_size:     90,
   inpaint_shrink:    1,
+  inpaint_method:    'flux',
+  unload_models:     false,
   chunk_size:        5,
   translate_retries: 3,
   ollama_url:        'http://127.0.0.1:11434/api/generate',
@@ -1786,6 +1801,8 @@ function applySettingsToUI(sett) {
   $('sett-min-area').value         = sett.min_bubble_area;
   $('sett-max-font').value         = sett.max_font_size;
   $('sett-inpaint-shrink').value   = sett.inpaint_shrink;
+  $('sett-inpaint-method').value   = sett.inpaint_method;
+  $('sett-unload-models').checked  = !!sett.unload_models;
   $('sett-chunk-size').value       = sett.chunk_size;
   $('sett-retries').value          = sett.translate_retries;
   $('sett-ollama-url').value       = sett.ollama_url;
@@ -1798,6 +1815,8 @@ function saveSettings() {
     min_bubble_area:   parseInt($('sett-min-area').value)           || SETTINGS_DEFAULTS.min_bubble_area,
     max_font_size:     parseInt($('sett-max-font').value)           || SETTINGS_DEFAULTS.max_font_size,
     inpaint_shrink:    parseInt($('sett-inpaint-shrink').value),
+    inpaint_method:    $('sett-inpaint-method').value || SETTINGS_DEFAULTS.inpaint_method,
+    unload_models:     $('sett-unload-models').checked,
     chunk_size:        parseInt($('sett-chunk-size').value)         || SETTINGS_DEFAULTS.chunk_size,
     translate_retries: parseInt($('sett-retries').value)            || SETTINGS_DEFAULTS.translate_retries,
     ollama_url:        $('sett-ollama-url').value.trim()            || SETTINGS_DEFAULTS.ollama_url,
@@ -1807,7 +1826,7 @@ function saveSettings() {
 
 // Wire settings controls → auto-save on change
 ['sett-detect-threshold','sett-sfx-threshold','sett-min-area','sett-max-font',
- 'sett-inpaint-shrink','sett-chunk-size','sett-retries','sett-ollama-url'
+ 'sett-inpaint-shrink','sett-inpaint-method','sett-unload-models','sett-chunk-size','sett-retries','sett-ollama-url'
 ].forEach(id => {
   const el = $(id);
   if (el) el.addEventListener('change', saveSettings);

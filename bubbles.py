@@ -31,6 +31,12 @@ def source_box(bubble: dict) -> tuple[int, int, int, int]:
     )
 
 
+def text_box(bubble: dict) -> tuple[int, int, int, int]:
+    if bubble.get("text_box"):
+        return tuple(bubble["text_box"])
+    return source_box(bubble)
+
+
 def _finite(value) -> float:
     result = float(value)
     if not math.isfinite(result):

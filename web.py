@@ -22,7 +22,7 @@ from context import MangaContext
 from fonts import system_font_dirs
 from image_io import SUPPORTED_EXTENSIONS, clip_box, read_image, to_pil, write_image
 from llm import model_phase
-from models import detect_bubbles
+from models import detect_bubbles, release_gpu_memory
 from ocr import ocr_region
 from ollama_models import model_capabilities
 from rendering import draw_results
@@ -182,8 +182,16 @@ async def _run_configured(job_id: str, function, *args, **kwargs):
         directory = result_dir / "mask_debug"
         directory.mkdir(exist_ok=True)
         values["mask_debug_dir"] = str(directory)
+
+    def run_and_release():
+        try:
+            return function(*args, **kwargs)
+        finally:
+            if settings().unload_models_fully:
+                release_gpu_memory(full=True)
+
     with use_settings(Settings(**values)):
-        return await asyncio.to_thread(function, *args, **kwargs)
+        return await asyncio.to_thread(run_and_release)
 
 
 app = FastAPI(title="Kotoba — Manga Translator")
@@ -408,6 +416,8 @@ async def upload_chapter(
     min_bubble_area: int = Form(400),
     max_font_size: int = Form(90),
     inpaint_shrink: int = Form(1),
+    inpaint_method: str = Form("flux"),
+    unload_models_fully: bool = Form(False),
     chunk_size: int = Form(5),
     translate_retries: int = Form(3),
 ):
@@ -418,6 +428,8 @@ async def upload_chapter(
             min_bubble_area=min_bubble_area,
             max_font_size=max_font_size,
             inpaint_shrink=inpaint_shrink,
+            inpaint_method=inpaint_method,
+            unload_models_fully=unload_models_fully,
             chunk_size=chunk_size,
             translate_retries=translate_retries,
         )
@@ -480,6 +492,8 @@ async def upload_chapter(
             "min_bubble_area": min_bubble_area,
             "max_font_size": max_font_size,
             "inpaint_shrink": inpaint_shrink,
+            "inpaint_method": inpaint_method,
+            "unload_models_fully": unload_models_fully,
             "chunk_size": chunk_size,
             "translate_retries": translate_retries,
         },
@@ -562,6 +576,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     min_bubble_area=cfg.get("min_bubble_area"),
                     max_font_size=cfg.get("max_font_size"),
                     inpaint_shrink=cfg.get("inpaint_shrink"),
+                    inpaint_method=cfg.get("inpaint_method"),
+                    unload_models_fully=cfg.get("unload_models_fully"),
                     chunk_size=cfg.get("chunk_size"),
                     translate_retries=cfg.get("translate_retries"),
                     error_log_path=str(JOBS_DIR / f"{job_id}_errors.log"),

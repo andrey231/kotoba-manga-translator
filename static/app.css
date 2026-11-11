@@ -236,6 +236,10 @@ button:disabled { background: var(--border); color: var(--muted); cursor: not-al
   padding: 2px 7px; border-radius: 4px;
 }
 .bubble-speaker { flex: none; font-size: 12px; font-weight: 600; color: var(--text); }
+.bubble-kind {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  padding: 1px 6px; border-radius: 4px; background: #4a3a20; color: #e0b46a; cursor: help;
+}
 .bubble-meta {
   flex: 1; min-width: 0; font-size: 11px; color: #777;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -479,6 +483,11 @@ button:disabled { background: var(--border); color: var(--muted); cursor: not-al
   font-size: 12px; color: var(--muted); line-height: 1.4;
 }
 .setting-control { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.setting-control select {
+  min-width: 170px; padding: 7px 10px; font-size: 14px;
+  background: var(--background); border: 1px solid var(--control-border);
+  color: var(--text); border-radius: 6px;
+}
 .setting-control input[type="number"] {
   width: 90px; padding: 7px 10px; font-size: 14px;
   background: var(--background); border: 1px solid var(--control-border);

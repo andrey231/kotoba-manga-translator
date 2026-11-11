@@ -7,6 +7,7 @@ import requests
 from context import ErrorLog, MangaContext
 from llm import ollama
 from settings import settings
+from sound_effects import SFX_KIND, sound_effect_meaning
 from text_utils import parse_json_array
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 TRANSLATE_NUM_CTX = 8192
 TRANSLATE_MAX_TOKENS = 2048
 TRANSLATE_INPUT_BYTES = TRANSLATE_NUM_CTX - TRANSLATE_MAX_TOKENS - 512
+SFX_ENTRY_TYPE = "sound effect"
 
 
 def _translation_schema(n: int) -> dict:
@@ -145,17 +147,26 @@ def translate_batch(
                     )
 
 
+def _chunk_entry(entry_id: int, page_index: int, bubble: dict, gender_hints: dict) -> dict:
+    entry = {
+        "id": entry_id,
+        "page_bubble": page_index + 1,
+        "speaker": bubble.get("speaker", "unknown"),
+        "gender": gender_hints.get(bubble.get("gender"), "gender unknown"),
+        "text": bubble["text"],
+        "emotion": bubble.get("emotion_hint", "neutral"),
+    }
+    if bubble.get("kind") == SFX_KIND:
+        entry["type"] = SFX_ENTRY_TYPE
+        meaning = sound_effect_meaning(bubble["text"])
+        if meaning:
+            entry["possible_meaning"] = meaning
+    return entry
+
+
 def _build_chunk_entries(chunk: list, gender_hints: dict) -> list[dict]:
     return [
-        {
-            "id": i + 1,
-            "page_bubble": page_index + 1,
-            "speaker": b.get("speaker", "unknown"),
-            "gender": gender_hints.get(b.get("gender"), "gender unknown"),
-            "text": b["text"],
-            "emotion": b.get("emotion_hint", "neutral"),
-        }
-        for i, (page_index, b) in enumerate(chunk)
+        _chunk_entry(i + 1, page_index, b, gender_hints) for i, (page_index, b) in enumerate(chunk)
     ]
 
 
@@ -237,6 +248,15 @@ For EACH bubble translate the ENTIRE text content:
   register and its intensity — a bubble tagged "excited/shouting" must feel
   exciting in the translation, not merely semantically correct.
 - Sound effects (PANT, HUFF, TCH, AHH, EEK, etc.): produce a natural equivalent in {target_lang}.
+- Items with "type": "sound effect" are onomatopoeia or mimetic words drawn into the
+  artwork, not speech. Translate them as a short expressive {target_lang} sound or
+  action word (one or two words; a hyphen or exclamation mark is fine) that conveys the
+  sound, motion, or feeling. Never turn a sound or motion into a spoken filler such as
+  "Hmm" or "Mm". If the item is really a spoken interjection written outside a bubble
+  (for example えっと), translate it as speech. "possible_meaning" is a dictionary hint
+  for the usual sense; follow the page context when it clearly differs. Name the action
+  or sound itself: for ぬっ (looming up) write a word such as Russian "НАВИС" or English
+  "LOOM", not an exclamation.
 - Announcements, credits, cast/staff lists, copyright notices: translate ALL lines
   faithfully — do NOT summarize, omit, or shorten. Keep proper names (people,
   companies, characters) unchanged. Only translate structural labels
@@ -412,6 +432,14 @@ def _translate_persistent(
     gender = bubble.get("gender", "unknown")
     gender_h = gender_hints.get(gender, "gender unknown")
     emotion = bubble.get("emotion_hint", "neutral")
+    sfx_note = ""
+    if bubble.get("kind") == SFX_KIND:
+        meaning = sound_effect_meaning(text)
+        sfx_note = (
+            "This is a sound effect drawn in the art, not speech; "
+            "give a short expressive equivalent"
+            + (f" (possible meaning: {meaning}).\n" if meaning else ".\n")
+        )
     glossary_prompt = _build_glossary_prompt()
     current_index = next(
         (index for index, item in source_items or () if item is bubble), None
@@ -427,6 +455,7 @@ def _translate_persistent(
             lambda: (
                 f"Translate this manga text to {target_lang}.\n"
                 f"Speaker: {speaker} ({gender_h}). Tone/emotion: {emotion}.\n"
+                + sfx_note
                 + f"{manga_ctx.to_prompt()}\n{page_context}\n{nearby}\n"
                 + f"Source: {text}\n\n"
                 f"Rules: match the emotional intensity of the original "
